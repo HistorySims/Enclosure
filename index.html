@@ -134,15 +134,15 @@ const SETTINGS = { numLines: 20, lineSpacing: 48, curveAmount: 20 };
 const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25 };
 const TASKS = { IDLE: 'idle', WALKING_TO_FIELD: 'walking_to_field', PLANTING: 'planting', HARVESTING: 'harvesting', TENDING_COMMONS: 'tending_commons', WALKING_HOME: 'walking_home' };
 const CROP_STAGES = ['seed', 'growing', 'ready'];
-const CROP_GROWTH_TIME = 300;
+const CROP_GROWTH_TIME = 450;
 const NODE_SPACING_PX = 40; // Fixed pixel spacing between crop nodes
 
-const game = { money: 120, food: 100, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [] };
+const game = { money: 50, food: 40, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [] };
 const sheepState = {};
 let ctx;
 
 // Only these hills show detailed content
-const VISIBLE_HILLS = [10, 11, 12];
+const VISIBLE_HILLS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
 
 // Store all other hills that might occlude
 const ALL_HILL_PATHS = {};
@@ -285,63 +285,56 @@ function drawSprout(x, y, scale) {
 
 function drawCabbage(stage, x, y, scale) {
   const s = scale * 21;
-  const jitter = (hash2(x, y) - 0.5) * s * 0.18;
+  const jitter = (hash2(x, y) - 0.5) * s * 0.12;
   x += jitter;
-  setInk(s * 0.12);
+  setInk(s * 0.10);
   if (stage === "seed") { drawSprout(x, y, scale); return; }
   if (stage === "growing") {
     ctx.beginPath();
-    ctx.ellipse(x, y, 0.70 * s, 0.55 * s, 0, 0, Math.PI * 2);
-    fillAndInk("#7FCB73");
-    ctx.beginPath();
-    ctx.ellipse(x, y, 0.45 * s, 0.35 * s, 0, 0, Math.PI * 2);
-    fillAndInk("#A6DFA0");
+    ctx.arc(x, y, 0.55 * s, 0, Math.PI * 2);
+    fillAndInk("#66BB6A");
     return;
   }
+  // Ready - round head
   ctx.beginPath();
-  ctx.ellipse(x, y, 0.95 * s, 0.75 * s, 0, 0, Math.PI * 2);
-  fillAndInk("#6FAF64");
+  ctx.arc(x, y, 0.75 * s, 0, Math.PI * 2);
+  fillAndInk("#4CAF50");
   ctx.beginPath();
-  ctx.ellipse(x, y, 0.65 * s, 0.50 * s, 0, 0, Math.PI * 2);
-  fillAndInk("#8FCC7D");
+  ctx.arc(x - 0.1 * s, y - 0.1 * s, 0.4 * s, 0, Math.PI * 2);
+  fillAndInk("#81C784");
 }
 
 function drawWheat(stage, x, y, scale) {
   const s = scale * 21;
-  const sway = (hash2(x, y) - 0.5) * 0.25;
+  const sway = (hash2(x, y) - 0.5) * 0.15;
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(sway);
-  setInk(s * 0.12);
+  setInk(s * 0.10);
   if (stage === "seed") { ctx.restore(); drawSprout(x, y, scale); return; }
   if (stage === "growing") {
     ctx.beginPath();
-    ctx.moveTo(-0.05 * s, 0.05 * s);
-    ctx.lineTo(0.05 * s, 0.05 * s);
-    ctx.lineTo(0.08 * s, -0.85 * s);
-    ctx.lineTo(0, -0.85 * s);
-    ctx.closePath();
-    fillAndInk("#7FCB73");
-    for (let i = 0; i < 4; i++) {
-      ctx.beginPath();
-      ctx.ellipse(0, -0.85 * s + i * 0.15 * s, 0.18 * s, 0.10 * s, 0, 0, Math.PI * 2);
-      fillAndInk("#D9B45A");
-    }
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, -0.7 * s);
+    ctx.strokeStyle = "#7CB342";
+    ctx.lineWidth = Math.max(1, s * 0.08);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(0, -0.8 * s, 0.15 * s, 0.2 * s, 0, 0, Math.PI * 2);
+    fillAndInk("#C8A951");
     ctx.restore();
     return;
   }
+  // Ready - golden stalk with round head
   ctx.beginPath();
-  ctx.moveTo(-0.05 * s, 0.05 * s);
-  ctx.lineTo(0.05 * s, 0.05 * s);
-  ctx.lineTo(0.10 * s, -1.05 * s);
-  ctx.lineTo(0, -1.05 * s);
-  ctx.closePath();
-  fillAndInk("#D9B45A");
-  for (let i = 0; i < 6; i++) {
-    ctx.beginPath();
-    ctx.ellipse(0, -1.05 * s + i * 0.16 * s, 0.22 * s, 0.12 * s, 0, 0, Math.PI * 2);
-    fillAndInk(i % 2 === 0 ? "#E6C36A" : "#F1D27E");
-  }
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, -0.9 * s);
+  ctx.strokeStyle = "#D4A940";
+  ctx.lineWidth = Math.max(1, s * 0.08);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(0, -1.0 * s, 0.2 * s, 0.28 * s, 0, 0, Math.PI * 2);
+  fillAndInk("#E6C36A");
   ctx.restore();
 }
 
@@ -374,43 +367,189 @@ function drawSheep(x, y, scale, direction) {
   ctx.fill();
 }
 
+// Folk art tree - round canopy on dark trunk
+function drawFolkTree(x, y, scale, variation) {
+  const s = scale * 28;
+  const v = variation || 0;
+  setInk(Math.max(1, s * 0.08));
+  // Trunk
+  const trunkW = s * 0.12;
+  const trunkH = s * (0.6 + v * 0.2);
+  ctx.beginPath();
+  ctx.moveTo(x - trunkW, y);
+  ctx.lineTo(x - trunkW * 0.7, y - trunkH);
+  ctx.lineTo(x + trunkW * 0.7, y - trunkH);
+  ctx.lineTo(x + trunkW, y);
+  ctx.closePath();
+  fillAndInk("#3D2B1F");
+  // Canopy - round blob like folk art
+  const canopyColors = ["#2D5016", "#1E6B1E", "#3A7D32", "#2B6B2B"];
+  const color = canopyColors[Math.floor(v * canopyColors.length) % canopyColors.length];
+  const canopyR = s * (0.45 + v * 0.15);
+  const canopyY = y - trunkH - canopyR * 0.6;
+  ctx.beginPath();
+  ctx.arc(x, canopyY, canopyR, 0, Math.PI * 2);
+  fillAndInk(color);
+  // Second smaller blob for variety
+  if (v > 0.3) {
+    const offX = (v - 0.5) * s * 0.3;
+    ctx.beginPath();
+    ctx.arc(x + offX, canopyY - canopyR * 0.3, canopyR * 0.6, 0, Math.PI * 2);
+    fillAndInk(color);
+  }
+}
+
+// Tree stump for cleared land
+function drawStump(x, y, scale) {
+  const s = scale * 18;
+  setInk(Math.max(1, s * 0.10));
+  // Stump body
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.2, y);
+  ctx.lineTo(x - s * 0.15, y - s * 0.35);
+  ctx.lineTo(x + s * 0.15, y - s * 0.35);
+  ctx.lineTo(x + s * 0.2, y);
+  ctx.closePath();
+  fillAndInk("#5D4037");
+  // Top of stump
+  ctx.beginPath();
+  ctx.ellipse(x, y - s * 0.35, s * 0.17, s * 0.07, 0, 0, Math.PI * 2);
+  fillAndInk("#8D6E63");
+}
+
+// Generate tree/stump positions for a hill
+const hillFeatures = {};
+function generateHillFeatures(hillNum) {
+  const config = hillConfigs[hillNum];
+  const { start, end } = config;
+  const width = end - start;
+  const hillTop = getHillTop(config);
+  const hillHeight = GROUND_Y - hillTop;
+  const hillPath = ALL_HILL_PATHS[hillNum];
+  const depth = depthOfHill(config);
+  const features = { trees: [], stumps: [] };
+
+  if (config.landType === 'forest') {
+    const numTrees = 12 + Math.floor(hash2(hillNum, 42) * 15);
+    for (let i = 0; i < numTrees; i++) {
+      const tx = start + width * (0.1 + hash2(i * 3, hillNum) * 0.8);
+      const ty = GROUND_Y - hillHeight * (0.15 + hash2(i * 3 + 1, hillNum) * 0.7);
+      if (hillPath && ctx.isPointInPath(hillPath, tx, ty) && isPointVisible(tx, ty, hillNum)) {
+        const heightProgress = clamp01((GROUND_Y - ty) / Math.max(1, hillHeight));
+        const scale = (1.0 - heightProgress * 0.35) * lerp(0.55, 1.2, depth);
+        features.trees.push({ x: tx, y: ty, scale, variation: hash2(i + 200, hillNum) });
+      }
+    }
+  } else if (config.landType === 'cleared') {
+    const numStumps = 5 + Math.floor(hash2(hillNum, 55) * 6);
+    for (let i = 0; i < numStumps; i++) {
+      const tx = start + width * (0.15 + hash2(i * 7, hillNum + 10) * 0.7);
+      const ty = GROUND_Y - hillHeight * (0.15 + hash2(i * 7 + 1, hillNum + 10) * 0.6);
+      if (hillPath && ctx.isPointInPath(hillPath, tx, ty) && isPointVisible(tx, ty, hillNum)) {
+        const heightProgress = clamp01((GROUND_Y - ty) / Math.max(1, hillHeight));
+        const scale = (1.0 - heightProgress * 0.35) * lerp(0.55, 1.2, depth);
+        features.stumps.push({ x: tx, y: ty, scale });
+      }
+    }
+    // A few stray trees
+    const numTrees = 2 + Math.floor(hash2(hillNum, 77) * 3);
+    for (let i = 0; i < numTrees; i++) {
+      const tx = start + width * (0.2 + hash2(i * 11, hillNum + 20) * 0.6);
+      const ty = GROUND_Y - hillHeight * (0.2 + hash2(i * 11 + 1, hillNum + 20) * 0.5);
+      if (hillPath && ctx.isPointInPath(hillPath, tx, ty) && isPointVisible(tx, ty, hillNum)) {
+        const heightProgress = clamp01((GROUND_Y - ty) / Math.max(1, hillHeight));
+        const scale = (0.8 - heightProgress * 0.3) * lerp(0.55, 1.2, depth);
+        features.trees.push({ x: tx, y: ty, scale, variation: hash2(i + 300, hillNum) });
+      }
+    }
+  }
+
+  // Sort by y for depth ordering
+  features.trees.sort((a, b) => a.y - b.y);
+  features.stumps.sort((a, b) => a.y - b.y);
+  return features;
+}
+
+function drawForestContent(hillNum, config) {
+  if (!hillFeatures[hillNum]) hillFeatures[hillNum] = generateHillFeatures(hillNum);
+  const features = hillFeatures[hillNum];
+  for (const tree of features.trees) {
+    drawFolkTree(tree.x, tree.y, tree.scale, tree.variation);
+  }
+}
+
+function drawClearedContent(hillNum, config) {
+  if (!hillFeatures[hillNum]) hillFeatures[hillNum] = generateHillFeatures(hillNum);
+  const features = hillFeatures[hillNum];
+  for (const stump of features.stumps) {
+    drawStump(stump.x, stump.y, stump.scale);
+  }
+  for (const tree of features.trees) {
+    drawFolkTree(tree.x, tree.y, tree.scale, tree.variation);
+  }
+}
+
 function drawHouse(house) {
   const { x, y, s, windows, litCount, color, roofColor } = house;
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate((hash2(x, y) - 0.5) * 0.10);
-  setInk(Math.max(1, s * 0.10));
+  ctx.rotate((hash2(x, y) - 0.5) * 0.06);
+  setInk(Math.max(1, s * 0.08));
+  // Shadow
   ctx.beginPath();
-  ctx.ellipse(0, s * 1.55, s * 1.15, s * 0.35, 0, 0, Math.PI * 2);
-  fillAndInk("rgba(28,20,16,0.10)");
+  ctx.ellipse(0, s * 2.0, s * 1.6, s * 0.4, 0, 0, Math.PI * 2);
+  fillAndInk("rgba(28,20,16,0.08)");
+  // Main body - taller
   ctx.beginPath();
-  ctx.rect(-s * 1.2, -s * 0.2, s * 2.4, s * 1.8);
+  ctx.rect(-s * 1.4, -s * 0.5, s * 2.8, s * 2.5);
   fillAndInk(color);
+  // Steep roof
   ctx.beginPath();
-  ctx.moveTo(-s * 1.35, -s * 0.2);
-  ctx.lineTo(0, -s * 1.45);
-  ctx.lineTo(s * 1.35, -s * 0.2);
+  ctx.moveTo(-s * 1.6, -s * 0.5);
+  ctx.lineTo(0, -s * 2.2);
+  ctx.lineTo(s * 1.6, -s * 0.5);
   ctx.closePath();
   fillAndInk(roofColor);
+  // Chimney
   ctx.beginPath();
-  ctx.rect(s * 0.65, -s * 1.20, s * 0.28, s * 0.70);
-  fillAndInk("#6B4A2E");
+  ctx.rect(s * 0.5, -s * 2.4, s * 0.4, s * 1.2);
+  fillAndInk("#5D4037");
   ctx.beginPath();
-  ctx.rect(-s * 0.25, s * 0.55, s * 0.50, s * 1.05);
-  fillAndInk("#C35B4A");
+  ctx.rect(s * 0.4, -s * 2.5, s * 0.6, s * 0.15);
+  fillAndInk("#4E342E");
+  // Door
   ctx.beginPath();
-  ctx.arc(s * 0.16, s * 1.05, s * 0.06, 0, Math.PI * 2);
+  ctx.rect(-s * 0.3, s * 0.7, s * 0.6, s * 1.3);
+  fillAndInk("#5D4037");
+  ctx.beginPath();
+  ctx.arc(s * 0.2, s * 1.3, s * 0.06, 0, Math.PI * 2);
   fillAndInk("#F1D27E");
-  const winW = s * 0.38, winH = s * 0.34, gapX = s * 0.22;
-  const slots = [{ cx: -(gapX + winW / 2), cy: s * 0.12 }, { cx: (gapX + winW / 2), cy: s * 0.12 }, { cx: -(gapX + winW / 2), cy: s * 0.62 }, { cx: (gapX + winW / 2), cy: s * 0.62 }].slice(0, windows);
+  // Windows with cross-panes
+  const winW = s * 0.45, winH = s * 0.42;
+  const slots = [
+    { cx: -s * 0.75, cy: s * 0.15 },
+    { cx: s * 0.75, cy: s * 0.15 },
+    { cx: -s * 0.75, cy: s * 0.9 },
+    { cx: s * 0.75, cy: s * 0.9 }
+  ].slice(0, windows);
   for (let i = 0; i < slots.length; i++) {
     const lit = i < litCount;
+    const sx = slots[i].cx, sy = slots[i].cy;
     ctx.beginPath();
-    ctx.rect(slots[i].cx - winW / 2, slots[i].cy - winH / 2, winW, winH);
+    ctx.rect(sx - winW/2, sy - winH/2, winW, winH);
     fillAndInk("#EEE8DC");
     ctx.beginPath();
-    ctx.rect(slots[i].cx - winW / 2 + s * 0.06, slots[i].cy - winH / 2 + s * 0.06, winW - s * 0.12, winH - s * 0.12);
+    ctx.rect(sx - winW/2 + s*0.05, sy - winH/2 + s*0.05, winW - s*0.10, winH - s*0.10);
     fillAndInk(lit ? "#F7D97C" : "#42505A");
+    // Cross panes
+    ctx.strokeStyle = "#EEE8DC";
+    ctx.lineWidth = Math.max(1, s * 0.06);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - winH/2 + s*0.05);
+    ctx.lineTo(sx, sy + winH/2 - s*0.05);
+    ctx.moveTo(sx - winW/2 + s*0.05, sy);
+    ctx.lineTo(sx + winW/2 - s*0.05, sy);
+    ctx.stroke();
   }
   ctx.restore();
 }
@@ -471,9 +610,9 @@ function createHouse(hillNum, config) {
   const depth = depthOfHill(config);
   const spread = (config.end - config.start) * 0.6;
   const offsetX = (houses.length - 2) * (spread / 5);
-  const s = 14 + depth * 3;
-  const bodyColors = ["#DDE8F6", "#F2E6C9", "#E8D6E9", "#CFE8D1", "#F6D5C5"];
-  const roofColors = ["#2B2B2E", "#3A2F2A", "#1F2A44", "#3B2E2A"];
+  const s = 20 + depth * 5;
+  const bodyColors = ["#C0392B", "#FDFEFE", "#F5E6CA", "#C62828", "#ECEFF1"];
+  const roofColors = ["#2B2B2E", "#3A2F2A", "#1F2A44", "#795548"];
   return {
     hillNum, x: anchor.x + offsetX, y: anchor.y, s,
     windows: 3 + Math.floor(Math.random() * 2),
@@ -496,7 +635,7 @@ function createPeasant(houseHillNum, houseIdx) {
     targetX: house.x, targetY: house.y,
     task: TASKS.IDLE,
     taskData: {},
-    speed: 1.5 + Math.random() * 0.5,
+    speed: 0.8 + Math.random() * 0.4,
     idleTimer: 60,
     direction: 1,
     workHill: null,
@@ -507,7 +646,7 @@ function createPeasant(houseHillNum, houseIdx) {
 function updatePeasantCount() {
   let totalCapacity = 0;
   for (const hillNum in game.houses) {
-    totalCapacity += game.houses[hillNum].length * 4;
+    totalCapacity += game.houses[hillNum].length * 2;
   }
   while (game.peasants.length < totalCapacity) {
     for (const hillNum in game.houses) {
@@ -750,8 +889,8 @@ function handlePeasantArrival(p) {
         if (node && node.crop && node.crop.stage === 'ready') {
           const config = hillConfigs[p.taskData.hillNum];
           const rowOwner = config.rowOwnership[p.taskData.rowIdx];
-          if (rowOwner === 'player') game.money += 2;
-          else game.food += 3;
+          if (rowOwner === 'player') game.money += 1;
+          else game.food += 2;
           node.hasCrop = false;
           node.crop = null;
           updateUI();
@@ -772,7 +911,7 @@ function handlePeasantArrival(p) {
     case TASKS.TENDING_COMMONS:
       p.idleTimer--;
       if (p.idleTimer <= 0) {
-        game.food += 3;
+        game.food += 2;
         updateUI();
         findWorkForPeasant(p);
       }
@@ -945,6 +1084,8 @@ function render() {
       switch (config.landType) {
         case "farm": drawFarmContent(i, config); break;
         case "commons": drawCommonsContent(i, config); break;
+        case "forest": drawForestContent(i, config); break;
+        case "cleared": drawClearedContent(i, config); break;
       }
       if (game.houses[i]) {
         for (const house of game.houses[i]) drawHouse(house);
@@ -1095,7 +1236,7 @@ function init() {
   }
 
   // Starter houses
-  for (const hillNum of [11, 12, 10]) {
+  for (const hillNum of [11]) {
     if (!VISIBLE_HILLS.includes(hillNum)) continue;
     if (!game.houses[hillNum]) game.houses[hillNum] = [];
     const house = createHouse(hillNum, hillConfigs[hillNum]);
