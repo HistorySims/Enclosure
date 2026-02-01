@@ -160,7 +160,7 @@ const CROP_GROWTH_TIME = 200;
 const CROP_ROT_TIME = 800;
 const NODE_SPACING_PX = 40; // Fixed pixel spacing between crop nodes
 
-const game = { money: 50, food: 40, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [] };
+const game = { money: 50, food: 40, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [], turnipsUnlocked: false };
 const sheepState = {};
 const floaters = [];
 let ctx;
@@ -389,8 +389,44 @@ function drawWheat(stage, x, y, scale) {
   }
 }
 
+function drawTurnip(stage, x, y, scale) {
+  const s = scale * 21;
+  const jitter = (hash2(x, y) - 0.5) * s * 0.12;
+  x += jitter;
+  setInk(s * 0.10);
+  if (stage === "seed") { drawSprout(x, y, scale); return; }
+  if (stage === "growing") {
+    ctx.beginPath();
+    ctx.arc(x, y - 0.15 * s, 0.35 * s, 0, Math.PI * 2);
+    fillAndInk("#66BB6A");
+    ctx.beginPath();
+    ctx.arc(x, y + 0.1 * s, 0.2 * s, 0, Math.PI * 2);
+    fillAndInk("#E8D5B7");
+    return;
+  }
+  if (stage === "rotten") {
+    ctx.beginPath();
+    ctx.arc(x, y, 0.5 * s, 0, Math.PI * 2);
+    fillAndInk("#8B7355");
+    return;
+  }
+  ctx.beginPath();
+  ctx.arc(x, y + 0.15 * s, 0.45 * s, 0, Math.PI * 2);
+  fillAndInk("#E8D5B7");
+  ctx.beginPath();
+  ctx.arc(x, y, 0.4 * s, Math.PI, 2 * Math.PI);
+  fillAndInk("#9C27B0");
+  ctx.beginPath();
+  ctx.ellipse(x - 0.15 * s, y - 0.4 * s, 0.1 * s, 0.22 * s, -0.3, 0, Math.PI * 2);
+  fillAndInk("#4CAF50");
+  ctx.beginPath();
+  ctx.ellipse(x + 0.15 * s, y - 0.4 * s, 0.1 * s, 0.22 * s, 0.3, 0, Math.PI * 2);
+  fillAndInk("#66BB6A");
+}
+
 function drawCrop(cropType, stage, x, y, scale) {
   if (cropType === "cabbage") drawCabbage(stage, x, y, scale);
+  else if (cropType === "turnip") drawTurnip(stage, x, y, scale);
   else drawWheat(stage, x, y, scale);
 }
 
@@ -832,7 +868,7 @@ function findWorkForPeasant(peasant) {
   for (const key of VISIBLE_HILLS) {
     const config = hillConfigs[key];
     if (!config) continue;
-    if (config.landType === 'farm' && config.rowOwnership) {
+    if (config.landType === 'farm' && config.rowOwnership && !config.isFallow) {
       for (let rowIdx = 0; rowIdx < config.rowOwnership.length; rowIdx++) {
         const nodes = getRowNodes(key, rowIdx);
         const emptyNodes = nodes.filter(n => !n.hasCrop);
@@ -935,6 +971,20 @@ function updatePeasants() {
   if (game.dayTimer >= game.dayLength) {
     game.dayTimer = 0;
     game.day++;
+    if (game.day === 50 && !game.turnipsUnlocked) showNewspaper();
+    // Check fallow fields
+    for (const fk in hillConfigs) {
+      const fc = hillConfigs[fk];
+      if (fc.landType === 'farm' && fc.isFallow && fc.fallowStartDay !== null) {
+        if (game.day - fc.fallowStartDay >= 10) {
+          fc.soilHealth = 100;
+          fc.isFallow = false;
+          fc.fallowStartDay = null;
+          fc.color = '#6B5D3F';
+          addLogMessage('Fallow field restored \u2014 soil health 100%');
+        }
+      }
+    }
     const foodNeeded = game.peasants.length * 2;
     game.food -= foodNeeded;
     if (game.food < 0) {
@@ -994,6 +1044,7 @@ function handlePeasantArrival(p) {
             game.food += 2;
             addFloater(node.x, node.y, '+2 food', '#E65100');
           }
+          config.soilHealth = Math.max(0, (config.soilHealth || 100) - 1);
           node.hasCrop = false;
           node.crop = null;
           updateUI();
@@ -1058,15 +1109,18 @@ function updateSheep(sheep) {
   }
 }
 
-// Crop growth and rot
+// Crop growth and rot (affected by soil health)
 function updateCropGrowth() {
   for (const key of VISIBLE_HILLS) {
     const config = hillConfigs[key];
     if (!config || config.landType !== 'farm' || !config.rowNodes) continue;
+    if (config.isFallow) continue;
+    const healthPct = (config.soilHealth !== undefined ? config.soilHealth : 100) / 100;
+    const effectiveGrowthTime = Math.round(CROP_GROWTH_TIME * (1 + (1 - healthPct) * 2));
+    const effectiveRotTime = Math.round(CROP_ROT_TIME * Math.max(0.2, healthPct));
     for (const rowIdx in config.rowNodes) {
       for (const node of config.rowNodes[rowIdx]) {
         if (!node.crop) continue;
-        // Rotten crops disappear after a while
         if (node.crop.stage === 'rotten') {
           node.crop.rotTimer = (node.crop.rotTimer || 0) + 1;
           if (node.crop.rotTimer >= 200) {
@@ -1075,18 +1129,16 @@ function updateCropGrowth() {
           }
           continue;
         }
-        // Ready crops start to rot
         if (node.crop.stage === 'ready') {
           node.crop.rotTimer = (node.crop.rotTimer || 0) + 1;
-          if (node.crop.rotTimer >= CROP_ROT_TIME) {
+          if (node.crop.rotTimer >= effectiveRotTime) {
             node.crop.stage = 'rotten';
             node.crop.rotTimer = 0;
           }
           continue;
         }
-        // Normal growth
         node.crop.growthTimer++;
-        if (node.crop.growthTimer >= CROP_GROWTH_TIME) {
+        if (node.crop.growthTimer >= effectiveGrowthTime) {
           node.crop.growthTimer = 0;
           const stageIdx = CROP_STAGES.indexOf(node.crop.stage);
           if (stageIdx < CROP_STAGES.length - 1) {
@@ -1102,7 +1154,10 @@ function updateCropGrowth() {
 function initializeFarmHill(config) {
   const effectiveNumLines = Math.round(SETTINGS.numLines);
   config.rowOwnership = [];
-  config.rowNodes = null; // Will be generated on first access
+  config.rowNodes = null;
+  if (config.soilHealth === undefined) config.soilHealth = 100;
+  if (!config.isFallow) config.isFallow = false;
+  if (!config.fallowStartDay) config.fallowStartDay = null;
   for (let i = 0; i < effectiveNumLines; i++) {
     config.rowOwnership.push(Math.random() < 0.33 ? "peasant" : "player");
   }
@@ -1258,6 +1313,27 @@ function showPopup(hillNum) {
   } else {
     html += `<p><em>This hill is too far away</em></p>`;
   }
+  if (config.landType === 'farm') {
+    const health = config.soilHealth !== undefined ? config.soilHealth : 100;
+    const healthColor = health > 60 ? '#4CAF50' : health > 30 ? '#FF9800' : '#F44336';
+    html += `<p style="margin-top:10px">🌱 Crop: <strong>${config.cropType || 'wheat'}</strong></p>`;
+    html += `<p>Soil Health: <span style="color:${healthColor};font-weight:bold">${Math.round(health)}%</span></p>`;
+    html += `<div style="background:#ddd;border-radius:4px;height:8px;margin:4px 0 8px"><div style="background:${healthColor};height:100%;width:${health}%;border-radius:4px"></div></div>`;
+    if (config.isFallow) {
+      const daysLeft = Math.max(0, 10 - (game.day - (config.fallowStartDay || game.day)));
+      html += `<p><em>Field is fallow (${daysLeft} days left)</em></p>`;
+      html += `<button class="popup-btn farm" onclick="endFallow(${hillNum})">End Fallow Early</button>`;
+    } else {
+      const crops = game.turnipsUnlocked ? ['wheat', 'cabbage', 'turnip'] : ['wheat', 'cabbage'];
+      const otherCrops = crops.filter(c => c !== (config.cropType || 'wheat'));
+      const restoreLabel = game.turnipsUnlocked ? '90%' : '50%';
+      for (const crop of otherCrops) {
+        html += `<button class="popup-btn farm" onclick="changeCrop(${hillNum},'${crop}')">Switch to ${crop} (+${restoreLabel} soil)</button>`;
+      }
+      html += `<button class="popup-btn clear" onclick="setFallow(${hillNum})">Set Fallow (restores soil in 10 days)</button>`;
+    }
+    html += `<p style="font-size:11px;color:#666;margin-top:8px"><em>Harvesting depletes soil. Switch crops or fallow to restore. Low soil = slow growth & fast rot.</em></p>`;
+  }
   html += `<button class="popup-btn close" onclick="closePopup()">Close</button>`;
   info.innerHTML = html;
   popup.classList.add('show');
@@ -1305,6 +1381,74 @@ window.buildCommons = function(hillNum) {
   sheepState[hillNum] = initializeSheep(hillNum, hillConfigs[hillNum]);
   closePopup();
 };
+
+window.changeCrop = function(hillNum, newCrop) {
+  const config = hillConfigs[hillNum];
+  config.cropType = newCrop;
+  const deficit = 100 - (config.soilHealth || 100);
+  const restorePct = game.turnipsUnlocked ? 0.9 : 0.5;
+  config.soilHealth = Math.min(100, (config.soilHealth || 100) + deficit * restorePct);
+  if (config.rowNodes) {
+    for (const rowIdx in config.rowNodes) {
+      for (const node of config.rowNodes[rowIdx]) {
+        node.hasCrop = false;
+        node.crop = null;
+      }
+    }
+  }
+  addLogMessage(`Switched to ${newCrop} \u2014 soil restored`);
+  closePopup();
+};
+
+window.setFallow = function(hillNum) {
+  const config = hillConfigs[hillNum];
+  config.isFallow = true;
+  config.fallowStartDay = game.day;
+  config.color = '#9E8E6E';
+  if (config.rowNodes) {
+    for (const rowIdx in config.rowNodes) {
+      for (const node of config.rowNodes[rowIdx]) {
+        node.hasCrop = false;
+        node.crop = null;
+      }
+    }
+  }
+  addLogMessage('Field set fallow \u2014 soil will restore in 10 days');
+  closePopup();
+};
+
+window.endFallow = function(hillNum) {
+  const config = hillConfigs[hillNum];
+  const daysFallow = game.day - (config.fallowStartDay || game.day);
+  const restorationPct = Math.min(1, daysFallow / 10);
+  const deficit = 100 - (config.soilHealth || 100);
+  config.soilHealth = Math.min(100, (config.soilHealth || 100) + deficit * restorationPct);
+  config.isFallow = false;
+  config.fallowStartDay = null;
+  config.color = '#6B5D3F';
+  addLogMessage('Fallow ended early \u2014 soil partially restored');
+  closePopup();
+};
+
+function showNewspaper() {
+  game.turnipsUnlocked = true;
+  const popup = document.getElementById('hillPopup');
+  const overlay = document.getElementById('popupOverlay');
+  const title = document.getElementById('popupTitle');
+  const info = document.getElementById('popupInfo');
+  title.textContent = '\ud83d\udcf0 THE VILLAGE GAZETTE';
+  info.innerHTML = `
+    <div style="text-align:left;border:2px solid #1c1410;padding:12px;margin:8px 0;font-family:Georgia,serif">
+      <p style="font-size:11px;color:#666;text-align:center">Day 50</p>
+      <h3 style="text-align:center;border-bottom:2px solid #1c1410;padding-bottom:6px;margin-bottom:8px">AGRICULTURAL BREAKTHROUGH!</h3>
+      <p style="font-size:13px;line-height:1.5">Local farmers have discovered the mighty <strong>turnip</strong>! This hardy root vegetable, when used in crop rotation, restores <strong>90%</strong> of depleted soil health &mdash; far superior to the mere 50% from switching between wheat and cabbage.</p>
+      <p style="font-size:13px;line-height:1.5;margin-top:8px">Scholars advise rotating between all three crops for maximum soil vitality.</p>
+    </div>
+    <button class="popup-btn build" onclick="closePopup()">Splendid!</button>
+  `;
+  popup.classList.add('show');
+  overlay.classList.add('show');
+}
 
 window.closePopup = closePopup;
 
