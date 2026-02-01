@@ -97,6 +97,27 @@
     .popup-btn.farm { background: #3498db; color: white; }
     .popup-btn.commons { background: #7CB342; color: white; }
     .popup-btn.close { background: #95a5a6; color: white; }
+    #game-log {
+      position: fixed;
+      bottom: 14px;
+      left: 14px;
+      z-index: 200;
+      max-width: 400px;
+      pointer-events: none;
+    }
+    .log-msg {
+      background: rgba(255,255,255,0.85);
+      border-radius: 6px;
+      padding: 6px 12px;
+      margin-top: 4px;
+      font-size: 12px;
+      color: #1c1410;
+      animation: logFade 5s ease-out forwards;
+    }
+    @keyframes logFade {
+      0%, 70% { opacity: 1; }
+      100% { opacity: 0; }
+    }
     #day-indicator {
       position: fixed;
       right: 14px; top: 14px;
@@ -112,8 +133,8 @@
 </head>
 <body>
   <div id="hud">
-    <span>💰 $<span id="moneyVal">0</span></span>
-    <span>🌾 <span id="foodVal">0</span></span>
+    <span>💰 £<span id="moneyVal">0</span></span>
+    <span>🍞 Stores: <span id="foodVal">0</span></span>
     <span>👥 <span id="peasantVal">0</span></span>
   </div>
   <div id="day-indicator">Day <span id="dayVal">1</span></div>
@@ -127,6 +148,7 @@
       <canvas id="gameCanvas" width="3000" height="800"></canvas>
     </div>
   </div>
+  <div id="game-log"></div>
 
 <script>
 const CANVAS_WIDTH = 3000, CANVAS_HEIGHT = 800, GROUND_Y = 800;
@@ -134,11 +156,13 @@ const SETTINGS = { numLines: 20, lineSpacing: 48, curveAmount: 20 };
 const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25 };
 const TASKS = { IDLE: 'idle', WALKING_TO_FIELD: 'walking_to_field', PLANTING: 'planting', HARVESTING: 'harvesting', TENDING_COMMONS: 'tending_commons', WALKING_HOME: 'walking_home' };
 const CROP_STAGES = ['seed', 'growing', 'ready'];
-const CROP_GROWTH_TIME = 450;
+const CROP_GROWTH_TIME = 200;
+const CROP_ROT_TIME = 800;
 const NODE_SPACING_PX = 40; // Fixed pixel spacing between crop nodes
 
 const game = { money: 50, food: 40, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [] };
 const sheepState = {};
+const floaters = [];
 let ctx;
 
 // Only these hills show detailed content
@@ -295,6 +319,15 @@ function drawCabbage(stage, x, y, scale) {
     fillAndInk("#66BB6A");
     return;
   }
+  if (stage === "rotten") {
+    ctx.beginPath();
+    ctx.arc(x, y, 0.6 * s, 0, Math.PI * 2);
+    fillAndInk("#8B7355");
+    ctx.beginPath();
+    ctx.arc(x, y, 0.35 * s, 0, Math.PI * 2);
+    fillAndInk("#6B5D3F");
+    return;
+  }
   // Ready - round head
   ctx.beginPath();
   ctx.arc(x, y, 0.75 * s, 0, Math.PI * 2);
@@ -306,41 +339,97 @@ function drawCabbage(stage, x, y, scale) {
 
 function drawWheat(stage, x, y, scale) {
   const s = scale * 21;
-  const sway = (hash2(x, y) - 0.5) * 0.15;
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(sway);
-  setInk(s * 0.10);
-  if (stage === "seed") { ctx.restore(); drawSprout(x, y, scale); return; }
+  setInk(s * 0.08);
+  if (stage === "seed") { drawSprout(x, y, scale); return; }
+  const numStalks = 3 + Math.floor(hash2(x, y) * 3);
   if (stage === "growing") {
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(0, -0.7 * s);
-    ctx.strokeStyle = "#7CB342";
-    ctx.lineWidth = Math.max(1, s * 0.08);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.ellipse(0, -0.8 * s, 0.15 * s, 0.2 * s, 0, 0, Math.PI * 2);
-    fillAndInk("#C8A951");
-    ctx.restore();
+    for (let i = 0; i < numStalks; i++) {
+      const angle = (hash2(x + i, y) - 0.5) * 0.4;
+      const stalkH = s * (0.5 + hash2(x, y + i) * 0.3);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.strokeStyle = "#7CB342";
+      ctx.lineWidth = Math.max(1, s * 0.06);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(0, -stalkH);
+      ctx.stroke();
+      ctx.restore();
+    }
     return;
   }
-  // Ready - golden stalk with round head
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(0, -0.9 * s);
-  ctx.strokeStyle = "#D4A940";
-  ctx.lineWidth = Math.max(1, s * 0.08);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.ellipse(0, -1.0 * s, 0.2 * s, 0.28 * s, 0, 0, Math.PI * 2);
-  fillAndInk("#E6C36A");
-  ctx.restore();
+  const isRotten = (stage === "rotten");
+  const stalkColor = isRotten ? "#8B7355" : "#D4A940";
+  const kernelColor = isRotten ? "#6B5D3F" : "#E6C36A";
+  const kernelColor2 = isRotten ? "#5D4E37" : "#D4A940";
+  for (let i = 0; i < numStalks; i++) {
+    const angle = (hash2(x + i, y) - 0.5) * 0.35;
+    const stalkH = s * (0.7 + hash2(x, y + i) * 0.3);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.strokeStyle = stalkColor;
+    ctx.lineWidth = Math.max(1, s * 0.06);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, -stalkH);
+    ctx.stroke();
+    // Kernel head
+    setInk(s * 0.06);
+    ctx.beginPath();
+    ctx.ellipse(0, -stalkH - s * 0.08, s * 0.08, s * 0.14, 0, 0, Math.PI * 2);
+    fillAndInk(i % 2 === 0 ? kernelColor : kernelColor2);
+    for (let k = 0; k < 3; k++) {
+      ctx.beginPath();
+      ctx.arc(s * 0.03 * (k % 2 === 0 ? 1 : -1), -stalkH - s * 0.04 + k * s * 0.06, s * 0.035, 0, Math.PI * 2);
+      fillAndInk(kernelColor2);
+    }
+    ctx.restore();
+  }
 }
 
 function drawCrop(cropType, stage, x, y, scale) {
   if (cropType === "cabbage") drawCabbage(stage, x, y, scale);
   else drawWheat(stage, x, y, scale);
+}
+
+// Resource floaters
+function addFloater(x, y, text, color) {
+  floaters.push({ x, y, text, color, life: 60, maxLife: 60 });
+}
+
+function updateFloaters() {
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    floaters[i].y -= 0.8;
+    floaters[i].life--;
+    if (floaters[i].life <= 0) floaters.splice(i, 1);
+  }
+}
+
+function drawFloaters() {
+  for (const f of floaters) {
+    const alpha = f.life / f.maxLife;
+    ctx.globalAlpha = alpha;
+    ctx.font = 'bold 16px Arial';
+    ctx.fillStyle = f.color;
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = 3;
+    ctx.strokeText(f.text, f.x, f.y);
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Game log
+function addLogMessage(text) {
+  const log = document.getElementById('game-log');
+  const msg = document.createElement('div');
+  msg.className = 'log-msg';
+  msg.textContent = text;
+  log.appendChild(msg);
+  setTimeout(() => msg.remove(), 5000);
+  while (log.children.length > 5) log.removeChild(log.firstChild);
 }
 
 function drawSheep(x, y, scale, direction) {
@@ -757,7 +846,7 @@ function findWorkForPeasant(peasant) {
         }
       }
     } else if (config.landType === 'commons') {
-      tasks.push({ type: TASKS.TENDING_COMMONS, hillNum: key, weight: 1 });
+      tasks.push({ type: TASKS.TENDING_COMMONS, hillNum: key, weight: 3 });
     }
   }
   
@@ -846,8 +935,17 @@ function updatePeasants() {
   if (game.dayTimer >= game.dayLength) {
     game.dayTimer = 0;
     game.day++;
-    game.food -= game.peasants.length * 2;
-    if (game.food < 0) game.food = 0;
+    const foodNeeded = game.peasants.length * 2;
+    game.food -= foodNeeded;
+    if (game.food < 0) {
+      const deficit = Math.abs(game.food);
+      const toRemove = Math.min(game.peasants.length, Math.ceil(deficit / 2));
+      for (let i = 0; i < toRemove; i++) {
+        game.peasants.pop();
+        addLogMessage('A peasant has moved away \u2014 not enough food');
+      }
+      game.food = 0;
+    }
     updateUI();
   }
 }
@@ -889,8 +987,13 @@ function handlePeasantArrival(p) {
         if (node && node.crop && node.crop.stage === 'ready') {
           const config = hillConfigs[p.taskData.hillNum];
           const rowOwner = config.rowOwnership[p.taskData.rowIdx];
-          if (rowOwner === 'player') game.money += 1;
-          else game.food += 2;
+          if (rowOwner === 'player') {
+            game.money += 1;
+            addFloater(node.x, node.y, '+£1', '#2E7D32');
+          } else {
+            game.food += 2;
+            addFloater(node.x, node.y, '+2 food', '#E65100');
+          }
           node.hasCrop = false;
           node.crop = null;
           updateUI();
@@ -912,6 +1015,7 @@ function handlePeasantArrival(p) {
       p.idleTimer--;
       if (p.idleTimer <= 0) {
         game.food += 2;
+        addFloater(p.x, p.y, '+2 food', '#E65100');
         updateUI();
         findWorkForPeasant(p);
       }
@@ -954,14 +1058,33 @@ function updateSheep(sheep) {
   }
 }
 
-// Crop growth
+// Crop growth and rot
 function updateCropGrowth() {
   for (const key of VISIBLE_HILLS) {
     const config = hillConfigs[key];
     if (!config || config.landType !== 'farm' || !config.rowNodes) continue;
     for (const rowIdx in config.rowNodes) {
       for (const node of config.rowNodes[rowIdx]) {
-        if (!node.crop || node.crop.stage === 'ready') continue;
+        if (!node.crop) continue;
+        // Rotten crops disappear after a while
+        if (node.crop.stage === 'rotten') {
+          node.crop.rotTimer = (node.crop.rotTimer || 0) + 1;
+          if (node.crop.rotTimer >= 200) {
+            node.hasCrop = false;
+            node.crop = null;
+          }
+          continue;
+        }
+        // Ready crops start to rot
+        if (node.crop.stage === 'ready') {
+          node.crop.rotTimer = (node.crop.rotTimer || 0) + 1;
+          if (node.crop.rotTimer >= CROP_ROT_TIME) {
+            node.crop.stage = 'rotten';
+            node.crop.rotTimer = 0;
+          }
+          continue;
+        }
+        // Normal growth
         node.crop.growthTimer++;
         if (node.crop.growthTimer >= CROP_GROWTH_TIME) {
           node.crop.growthTimer = 0;
@@ -1099,6 +1222,9 @@ function render() {
       drawPeasant(peasant, peasant.isShepherd);
     }
   }
+
+  // Draw floaters
+  drawFloaters();
 }
 
 // Game loop
@@ -1106,6 +1232,7 @@ function gameLoop() {
   for (const key in sheepState) updateSheep(sheepState[key]);
   updatePeasants();
   updateCropGrowth();
+  updateFloaters();
   render();
   requestAnimationFrame(gameLoop);
 }
@@ -1122,11 +1249,11 @@ function showPopup(hillNum) {
   title.textContent = `Hill ${hillNum} - ${landNames[config.landType] || config.landType}`;
   let html = `<p>🏠 Houses: ${houseCount}/5</p>`;
   if (VISIBLE_HILLS.includes(hillNum)) {
-    if (houseCount < 5) html += `<button class="popup-btn build" onclick="buildCottage(${hillNum})">Build Cottage ($${COSTS.house})</button>`;
-    if (config.landType === 'forest') html += `<button class="popup-btn clear" onclick="clearLand(${hillNum})">Clear Land ($${COSTS.clearLand})</button>`;
+    if (houseCount < 5) html += `<button class="popup-btn build" onclick="buildCottage(${hillNum})">Build Cottage (£${COSTS.house})</button>`;
+    if (config.landType === 'forest') html += `<button class="popup-btn clear" onclick="clearLand(${hillNum})">Clear Land (£${COSTS.clearLand})</button>`;
     if (config.landType === 'cleared') {
-      html += `<button class="popup-btn farm" onclick="buildFarm(${hillNum})">Build Farm ($${COSTS.buildFarm})</button>`;
-      html += `<button class="popup-btn commons" onclick="buildCommons(${hillNum})">Make Commons ($${COSTS.buildCommons})</button>`;
+      html += `<button class="popup-btn farm" onclick="buildFarm(${hillNum})">Build Farm (£${COSTS.buildFarm})</button>`;
+      html += `<button class="popup-btn commons" onclick="buildCommons(${hillNum})">Make Commons (£${COSTS.buildCommons})</button>`;
     }
   } else {
     html += `<p><em>This hill is too far away</em></p>`;
@@ -1158,6 +1285,7 @@ window.clearLand = function(hillNum) {
   if (!spend(COSTS.clearLand)) return;
   hillConfigs[hillNum].landType = 'cleared';
   hillConfigs[hillNum].color = '#8B7355';
+  delete hillFeatures[hillNum];
   closePopup();
 };
 
