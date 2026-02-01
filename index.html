@@ -95,6 +95,7 @@
     .popup-btn.build { background: #27ae60; color: white; }
     .popup-btn.clear { background: #e67e22; color: white; }
     .popup-btn.farm { background: #3498db; color: white; }
+    .popup-btn.commons { background: #7CB342; color: white; }
     .popup-btn.close { background: #95a5a6; color: white; }
     #day-indicator {
       position: fixed;
@@ -130,7 +131,7 @@
 <script>
 const CANVAS_WIDTH = 3000, CANVAS_HEIGHT = 800, GROUND_Y = 800;
 const SETTINGS = { numLines: 20, lineSpacing: 48, curveAmount: 20 };
-const COSTS = { house: 20, clearLand: 100, buildFarm: 25 };
+const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25 };
 const TASKS = { IDLE: 'idle', WALKING_TO_FIELD: 'walking_to_field', PLANTING: 'planting', HARVESTING: 'harvesting', TENDING_COMMONS: 'tending_commons', WALKING_HOME: 'walking_home' };
 const CROP_STAGES = ['seed', 'growing', 'ready'];
 const CROP_GROWTH_TIME = 300;
@@ -982,7 +983,10 @@ function showPopup(hillNum) {
   if (VISIBLE_HILLS.includes(hillNum)) {
     if (houseCount < 5) html += `<button class="popup-btn build" onclick="buildCottage(${hillNum})">Build Cottage ($${COSTS.house})</button>`;
     if (config.landType === 'forest') html += `<button class="popup-btn clear" onclick="clearLand(${hillNum})">Clear Land ($${COSTS.clearLand})</button>`;
-    if (config.landType === 'cleared') html += `<button class="popup-btn farm" onclick="buildFarm(${hillNum})">Build Farm ($${COSTS.buildFarm})</button>`;
+    if (config.landType === 'cleared') {
+      html += `<button class="popup-btn farm" onclick="buildFarm(${hillNum})">Build Farm ($${COSTS.buildFarm})</button>`;
+      html += `<button class="popup-btn commons" onclick="buildCommons(${hillNum})">Make Commons ($${COSTS.buildCommons})</button>`;
+    }
   } else {
     html += `<p><em>This hill is too far away</em></p>`;
   }
@@ -1022,6 +1026,14 @@ window.buildFarm = function(hillNum) {
   hillConfigs[hillNum].color = '#6B5D3F';
   hillConfigs[hillNum].cropType = 'wheat';
   initializeFarmHill(hillConfigs[hillNum]);
+  closePopup();
+};
+
+window.buildCommons = function(hillNum) {
+  if (!spend(COSTS.buildCommons)) return;
+  hillConfigs[hillNum].landType = 'commons';
+  hillConfigs[hillNum].color = '#7CB342';
+  sheepState[hillNum] = initializeSheep(hillNum, hillConfigs[hillNum]);
   closePopup();
 };
 
