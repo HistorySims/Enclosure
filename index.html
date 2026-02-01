@@ -1,0 +1,2234 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Geometric Rolling Hills with Crops</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+body{
+  font-family: Arial, sans-serif;
+  overflow:hidden;
+  background: linear-gradient(to bottom, #87CEEB 0%, #B0E0E6 100%);
+}
+
+#viewport{
+  width:100vw; height:100vh;
+  overflow-x:auto; overflow-y:hidden;
+  cursor:grab;
+  position:relative;
+}
+#viewport:active{ cursor:grabbing; }
+
+#landscape-container{
+  height:100vh;
+  width:3000px;
+  position:relative;
+}
+
+canvas{
+  position:absolute;
+  bottom:0; left:0;
+  width:100%; height:100%;
+}
+
+.hill-popup {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(255, 255, 255, 0.95);
+  padding: 20px 30px;
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  display: none;
+  min-width: 200px;
+  text-align: center;
+}
+
+.hill-popup.show {
+  display: block;
+}
+
+.popup-title {
+  font-size: 20px;
+  font-weight: bold;
+  color: #2c3e50;
+  margin-bottom: 10px;
+}
+
+.popup-info {
+  font-size: 14px;
+  color: #555;
+  margin-bottom: 15px;
+}
+
+.popup-close {
+  background: #3498db;
+  color: white;
+  border: none;
+  padding: 8px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.popup-close:hover {
+  background: #2980b9;
+}
+
+.popup-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 999;
+  display: none;
+}
+
+.popup-overlay.show {
+  display: block;
+}
+
+#hud{
+  position: fixed;
+  left: 14px;
+  top: 14px;
+  z-index: 200;
+  background: rgba(255,255,255,0.92);
+  border: 2px solid rgba(28,20,16,0.25);
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-weight: bold;
+  color: #1c1410;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+  user-select: none;
+}
+#hud.bad{ background: rgba(255,230,230,0.95); border-color: rgba(200,60,60,0.5); }
+```
+
+  </style>
+</head>
+
+<body>
+  <div id="hud">
+    💰 $<span id="moneyVal">0</span> | 
+    🌾 <span id="foodVal">0</span>
+  </div>
+
+  <div class="popup-overlay" id="popupOverlay" onclick="closePopup()"></div>
+  <div class="hill-popup" id="hillPopup">
+    <div class="popup-title" id="popupTitle">Hill</div>
+    <div class="popup-info" id="popupInfo"></div>
+    <button class="popup-close" onclick="closePopup()">Close</button>
+  </div>
+
+  <div id="viewport">
+    <div id="landscape-container">
+      <canvas id="gameCanvas" width="3000" height="800"></canvas>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const GROUND_Y = 800;
+
+    // Hardcoded settings (from your tuning panel)
+    const settings = {
+      numLines: 24,
+      lineSpacing: 56,
+      cropsPerLine: 32,
+      curveAmount: 20
+    };
+
+    // ===== DROP-IN: Houses + money =====
+    const game = {
+      money: 120,            // starting cash
+      houseCost: 20,         // cost per cottage
+      clearCost: 100,        // cost to clear land
+      farmCost: 25,          // cost to build farm
+      houses: {},            // keyed by hillNum -> array of houses (up to 5 per hill)
+      peasants: [],          // array of peasant workers
+      peasantFood: 100,      // food stockpile for peasants
+      rent: 0,               // rent per house per day (adjustable)
+      dayTimer: 0,           // tracks day/night cycle
+      dayLength: 600         // frames per day
+    };
+
+    const PEASANT_TASKS = {
+      IDLE: 'idle',
+      WALKING_TO_FIELD: 'walking_to_field',
+      PLANTING: 'planting',
+      HARVESTING: 'harvesting',
+      TENDING_COMMONS: 'tending_commons',
+      WALKING_HOME: 'walking_home'
+    };
+
+    function setMoney(v){
+      game.money = Math.max(0, Math.floor(v));
+      const el = document.getElementById('moneyVal');
+      if (el) el.textContent = game.money;
+    }
+
+    function setPeasantFood(v){
+      game.peasantFood = Math.max(0, Math.floor(v));
+      const el = document.getElementById('foodVal');
+      if (el) el.textContent = game.peasantFood;
+    }
+    
+    function spend(cost){
+      if (game.money < cost) {
+        const hud = document.getElementById('hud');
+        if (hud) {
+          hud.classList.add('bad');
+          setTimeout(()=>hud.classList.remove('bad'), 180);
+        }
+        return false;
+      }
+      setMoney(game.money - cost);
+      return true;
+    }
+
+    // Get a decent "top of hill" anchor point (mid x on the ridge line).
+    function getHillCurve(hillNum, config) {
+      // Sample points along the hill top
+      const { start, end, type } = config;
+      const points = [];
+      const segments = 50;
+      
+      for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const x = start + (end - start) * t;
+        
+        if (type === "double") {
+          const { peak1, peak2, valley } = config;
+          const mid = (start + end) / 2;
+          const width = end - start;
+          
+          let y;
+          if (x < mid) {
+            const localT = (x - start) / (mid - start);
+            y = peak1 + (valley - peak1) * localT * localT;
+          } else {
+            const localT = (x - mid) / (end - mid);
+            y = valley + (peak2 - valley) * (1 - (1 - localT) * (1 - localT));
+          }
+          points.push({ x, y });
+        } else {
+          const { peak } = config;
+          const mid = (start + end) / 2;
+          const width = end - start;
+          
+          // Parabolic curve
+          const normalizedX = (x - mid) / (width / 2);
+          const y = peak + (GROUND_Y - peak) * normalizedX * normalizedX;
+          points.push({ x, y });
+        }
+      }
+      
+      return points;
+    }
+    
+    function findPointAtX(curve, targetX) {
+      // Find closest point to targetX
+      let closest = curve[0];
+      let minDist = Math.abs(curve[0].x - targetX);
+      
+      for (const p of curve) {
+        const dist = Math.abs(p.x - targetX);
+        if (dist < minDist) {
+          minDist = dist;
+          closest = p;
+        }
+      }
+      
+      return closest;
+    }
+
+    function getHillTopAnchor(hillNum, config){
+      const start = config.start, end = config.end;
+      const midX = (start + end) / 2;
+
+      // sample ridge curve & pick closest point to midX
+      const curve = getHillCurve(hillNum, config);
+      const p = findPointAtX(curve, midX);
+
+      // lift house above ridge a bit
+      const lift = 18;
+      return { x: p.x, y: p.y - lift };
+    }
+
+    // ===== DROP-IN: click-to-buy house =====
+    function makeHouseForHill(hillNum, config){
+      const existingHouses = game.houses[hillNum] || [];
+      const houseCount = existingHouses.length;
+      
+      if (houseCount >= 5) return null; // Max 5 houses per hill
+      
+      const anchor = getHillTopAnchor(hillNum, config);
+      const depth = depthOfHill(config);
+
+      // Spread houses across the hilltop
+      const spread = (config.end - config.start) * 0.6;
+      const offsetX = (houseCount - 2) * (spread / 5);
+
+      const s = 12 + depth * 3; // Bigger cottages (was 10 + depth * 8)
+
+      const windows = 3 + Math.floor(Math.random() * 2); // 3-4 windows for cottages
+
+      const bodyOptions = ["#DDE8F6","#F2E6C9","#E8D6E9","#CFE8D1","#F6D5C5"];
+      const roofOptions = ["#2B2B2E","#3A2F2A","#1F2A44","#3B2E2A"];
+
+      const house = {
+        hillNum,
+        x: anchor.x + offsetX,
+        y: anchor.y,
+        s,
+        windows,
+        litCount: 0,
+        color: bodyOptions[Math.floor(Math.random()*bodyOptions.length)],
+        roofColor: roofOptions[Math.floor(Math.random()*roofOptions.length)]
+      };
+
+      return house;
+    }
+
+    // Public helpers
+    function setHouseOccupancy(hillNum, litCount){
+      const h = game.houses[hillNum];
+      if (!h) return;
+      h.litCount = Math.max(0, Math.min(h.windows, Math.floor(litCount)));
+    }
+    
+    function getTotalHouses(){
+      return Object.keys(game.houses).length;
+    }
+
+    // ===== PEASANT SYSTEM =====
+    function createPeasant(houseHillNum, houseIdx) {
+      if (!game.houses[houseHillNum] || !game.houses[houseHillNum][houseIdx]) return null;
+      
+      const house = game.houses[houseHillNum][houseIdx];
+
+      return {
+        id: Date.now() + Math.random(),
+        homeHill: houseHillNum,
+        houseIdx,
+        x: house.x,
+        y: house.y,
+        targetX: house.x,
+        targetY: house.y,
+        task: PEASANT_TASKS.IDLE,
+        taskData: {},
+        speed: (0.5 + Math.random() * 0.3) * 2, // 2x faster
+        idleTimer: 0,
+        direction: 1,
+        workDepth: 0
+      };
+    }
+
+    function updatePeasantCount() {
+      let totalCapacity = 0;
+      for (const hillNum in game.houses) {
+        totalCapacity += game.houses[hillNum].length * 4; // 4 peasants per cottage
+      }
+      
+      const currentPeasants = game.peasants.length;
+      
+      if (currentPeasants < totalCapacity) {
+        // Add peasants
+        for (const hillNum in game.houses) {
+          const houses = game.houses[hillNum];
+          for (let hIdx = 0; hIdx < houses.length; hIdx++) {
+            for (let p = 0; p < 4; p++) {
+              if (game.peasants.length >= totalCapacity) break;
+              const peasant = createPeasant(parseInt(hillNum), hIdx);
+              if (peasant) game.peasants.push(peasant);
+            }
+          }
+        }
+      } else if (currentPeasants > totalCapacity) {
+        game.peasants = game.peasants.slice(0, totalCapacity);
+      }
+
+      // Update house lights
+      const peasantsByHouse = {};
+      for (const p of game.peasants) {
+        const key = `${p.homeHill}-${p.houseIdx}`;
+        peasantsByHouse[key] = (peasantsByHouse[key] || 0) + 1;
+      }
+      for (const hillNum in game.houses) {
+        const houses = game.houses[hillNum];
+        for (let hIdx = 0; hIdx < houses.length; hIdx++) {
+          const key = `${hillNum}-${hIdx}`;
+          const count = peasantsByHouse[key] || 0;
+          houses[hIdx].litCount = Math.min(houses[hIdx].windows, Math.ceil(count / (4 / houses[hIdx].windows)));
+        }
+      }
+    }
+
+    function findWork(peasant) {
+      // Choose task based on what's available and needed
+      const tasks = [];
+
+      // Check for farm rows that need work
+      for (const key in hillConfigs) {
+        const config = hillConfigs[key];
+        if (config.landType === 'farm' && config.rowOwnership && config.rowCrops) {
+          // Check each row for work
+          for (let rowIdx = 0; rowIdx < config.rowOwnership.length; rowIdx++) {
+            const row = { hillNum: parseInt(key), rowIdx };
+            const rowCropList = config.rowCrops[rowIdx] || [];
+            
+            // Check if needs planting (less than 12 crops)
+            if (rowCropList.length < 12) {
+              tasks.push({ type: PEASANT_TASKS.PLANTING, row, weight: 3 });
+            }
+            // Check if ready to harvest (has mature crops)
+            else if (rowCropList.some(c => c.stage === 'ready')) {
+              tasks.push({ type: PEASANT_TASKS.HARVESTING, row, weight: 5 });
+            }
+          }
+        }
+        // Commons work (always available, lower priority)
+        else if (config.landType === 'commons') {
+          tasks.push({ type: PEASANT_TASKS.TENDING_COMMONS, hillNum: parseInt(key), weight: 1 });
+        }
+      }
+
+      if (tasks.length === 0) {
+        // No work available, go home
+        peasant.task = PEASANT_TASKS.WALKING_HOME;
+        const houses = game.houses[peasant.homeHill];
+        if (!houses || !houses[peasant.houseIdx]) {
+          peasant.task = PEASANT_TASKS.IDLE;
+          return;
+        }
+        const house = houses[peasant.houseIdx];
+        peasant.targetX = house.x;
+        peasant.targetY = house.y;
+        peasant.taskData = {};
+        return;
+      }
+
+      // Weighted random selection
+      const totalWeight = tasks.reduce((sum, t) => sum + t.weight, 0);
+      let rand = Math.random() * totalWeight;
+      let chosen = tasks[0];
+      
+      for (const task of tasks) {
+        rand -= task.weight;
+        if (rand <= 0) {
+          chosen = task;
+          break;
+        }
+      }
+
+      // Set task and get row line points
+      if (chosen.row) {
+        const config = hillConfigs[chosen.row.hillNum];
+        peasant.workDepth = depthOfHill(config); // Store for layering
+        
+        peasant.task = PEASANT_TASKS.WALKING_TO_FIELD;
+        peasant.taskData = { 
+          hillNum: chosen.row.hillNum,
+          rowIdx: chosen.row.rowIdx,
+          taskType: chosen.type,
+          progress: 0, // Progress along the row (0-100)
+          rowPoints: getRowPoints(chosen.row.hillNum, chosen.row.rowIdx)
+        };
+        
+        // Make sure we have valid points
+        if (peasant.taskData.rowPoints.length === 0) {
+          // No valid points, find different work
+          findWork(peasant);
+          return;
+        }
+        
+        // Start at the beginning of the row
+        const firstPoint = peasant.taskData.rowPoints[0];
+        peasant.targetX = firstPoint.x;
+        peasant.targetY = firstPoint.y;
+      } else {
+        // Commons work
+        const config = hillConfigs[chosen.hillNum];
+        peasant.workDepth = depthOfHill(config);
+        
+        peasant.task = PEASANT_TASKS.WALKING_TO_FIELD;
+        peasant.taskData = { hillNum: chosen.hillNum, taskType: chosen.type };
+        
+        const targetX = config.start + (config.end - config.start) * Math.random();
+        const hillTop = getHillTop(config);
+        const hillHeight = GROUND_Y - hillTop;
+        const targetY = GROUND_Y - hillHeight * (0.3 + Math.random() * 0.5);
+        
+        peasant.targetX = targetX;
+        peasant.targetY = targetY;
+      }
+    }
+
+    // Get the points along a specific crop row
+    function getRowPoints(hillNum, rowIdx) {
+      const config = hillConfigs[hillNum];
+      const { start, end } = config;
+      const width = end - start;
+      const hillTop = getHillTop(config);
+      const hillHeight = GROUND_Y - hillTop;
+      const depth = depthOfHill(config);
+
+      const spacingMult = lerp(0.65, 1.45, depth);
+      const effectiveNumLines = Math.round(clamp01(lerp(0.95, 1.10, 1 - depth)) * settings.numLines);
+      const effectiveSpacing = settings.lineSpacing * spacingMult;
+
+      const slope = (hillNum % 2 === 0) ? 1 : -1;
+      const offset = (rowIdx - effectiveNumLines / 2) * effectiveSpacing;
+
+      // Create hill path for bounds checking
+      const hillPath = new Path2D(generateHillPath(hillNum, config));
+
+      // Sample points along the row
+      const points = [];
+      const segments = 60;
+      
+      for (let seg = 0; seg <= segments; seg++) {
+        const t = seg / segments;
+        const x = start + width * t;
+
+        const centerX = start + width / 2;
+        const centerY = hillTop + hillHeight / 2;
+
+        let y = slope * (x - centerX) + centerY + offset;
+
+        if (settings.curveAmount > 0) {
+          const distFromCenter = 1 - Math.abs(t - 0.5) * 2;
+          const parabolicCurve = distFromCenter * distFromCenter * settings.curveAmount;
+          y += parabolicCurve * lerp(0.9, 1.15, depth);
+        }
+
+        // Only add point if it's within the hill bounds
+        if (ctx.isPointInPath(hillPath, x, y)) {
+          points.push({ x, y });
+        }
+      }
+
+      return points;
+    }
+
+    function updatePeasants() {
+      for (const p of game.peasants) {
+        const dx = p.targetX - p.x;
+        const dy = p.targetY - p.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        // Update direction based on movement
+        if (Math.abs(dx) > 1) {
+          p.direction = dx > 0 ? 1 : -1;
+        }
+
+        if (dist < 5) {
+          // Reached destination
+          if (p.task === PEASANT_TASKS.WALKING_TO_FIELD) {
+            p.task = p.taskData.taskType;
+            if (p.taskData.rowPoints) {
+              p.taskData.progress = 0;
+            } else {
+              p.idleTimer = 120 + Math.random() * 180;
+            }
+          } else if (p.task === PEASANT_TASKS.PLANTING || p.task === PEASANT_TASKS.HARVESTING) {
+            // Working on a row - advance along it
+            if (p.taskData.rowPoints) {
+              const oldProgress = p.taskData.progress;
+              p.taskData.progress += 1.5; // Speed of work
+              
+              const config = hillConfigs[p.taskData.hillNum];
+              const rowIdx = p.taskData.rowIdx;
+              
+              if (p.task === PEASANT_TASKS.PLANTING) {
+                // Add crops as we walk (every 8% progress = one crop spacing)
+                const cropSpacing = 8;
+                const lastCrop = Math.floor(oldProgress / cropSpacing);
+                const currentCrop = Math.floor(p.taskData.progress / cropSpacing);
+                
+                if (currentCrop > lastCrop && currentCrop * cropSpacing <= 100) {
+                  // Plant a new crop!
+                  const cropPosition = currentCrop * cropSpacing;
+                  if (!config.rowCrops[rowIdx].some(c => Math.abs(c.position - cropPosition) < 1)) {
+                    config.rowCrops[rowIdx].push({
+                      position: cropPosition,
+                      stage: 'seed'
+                    });
+                  }
+                }
+              }
+              
+              if (p.taskData.progress >= 100) {
+                // Finished the row!
+                if (p.task === PEASANT_TASKS.HARVESTING) {
+                  // Harvest all crops on this row
+                  const rowOwner = config.rowOwnership[rowIdx];
+                  const cropCount = config.rowCrops[rowIdx]?.length || 0;
+                  
+                  if (rowOwner === 'player') {
+                    setMoney(game.money + cropCount * 2);
+                  } else {
+                    setPeasantFood(game.peasantFood + cropCount * 3);
+                  }
+                  
+                  // Clear the row
+                  config.rowCrops[rowIdx] = [];
+                }
+                
+                findWork(p);
+              } else {
+                // Move to next point along row
+                const pointIdx = Math.floor((p.taskData.progress / 100) * p.taskData.rowPoints.length);
+                const nextPoint = p.taskData.rowPoints[Math.min(pointIdx, p.taskData.rowPoints.length - 1)];
+                p.targetX = nextPoint.x;
+                p.targetY = nextPoint.y;
+              }
+            }
+          } else if (p.task === PEASANT_TASKS.TENDING_COMMONS) {
+            p.idleTimer--;
+            if (p.idleTimer <= 0) {
+              setPeasantFood(game.peasantFood + 3);
+              findWork(p);
+            }
+          } else if (p.task === PEASANT_TASKS.WALKING_HOME) {
+            p.task = PEASANT_TASKS.IDLE;
+            p.idleTimer = 60 + Math.random() * 120;
+          } else if (p.task === PEASANT_TASKS.IDLE) {
+            p.idleTimer--;
+            if (p.idleTimer <= 0) {
+              findWork(p);
+            }
+          }
+        } else {
+          // Move towards target
+          const moveSpeed = p.speed * 0.8;
+          p.x += (dx / dist) * moveSpeed;
+          p.y += (dy / dist) * moveSpeed;
+        }
+      }
+
+      // Peasants consume food slowly
+      game.dayTimer++;
+      if (game.dayTimer >= game.dayLength) {
+        game.dayTimer = 0;
+        // End of day: collect rent and consume food
+        const houseCount = Object.keys(game.houses).length;
+        setMoney(game.money + (game.rent * houseCount));
+        setPeasantFood(game.peasantFood - game.peasants.length * 2);
+      }
+    }
+
+    function drawPeasant(ctx, peasant) {
+      const x = peasant.x;
+      const y = peasant.y;
+      const s = 32; // 4x bigger (was 8)
+
+      ctx.save();
+      
+      // Flip based on direction
+      if (peasant.direction === -1) {
+        ctx.translate(x, y);
+        ctx.scale(-1, 1);
+        ctx.translate(-x, -y);
+      }
+
+      setInk(ctx, s * 0.10);
+
+      // Body
+      ctx.beginPath();
+      ctx.arc(x, y, s * 0.35, 0, Math.PI * 2);
+      fillAndInk(ctx, "#8B6F47");
+
+      // Head
+      ctx.beginPath();
+      ctx.arc(x, y - s * 0.45, s * 0.25, 0, Math.PI * 2);
+      fillAndInk(ctx, "#D4A574");
+
+      // Hat
+      ctx.beginPath();
+      ctx.ellipse(x, y - s * 0.65, s * 0.30, s * 0.12, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#6B4A2E");
+
+      // Legs (simple lines)
+      ctx.strokeStyle = "rgba(28,20,16,0.8)";
+      ctx.lineWidth = Math.max(1, s * 0.10);
+      ctx.beginPath();
+      ctx.moveTo(x - s * 0.15, y + s * 0.30);
+      ctx.lineTo(x - s * 0.15, y + s * 0.60);
+      ctx.moveTo(x + s * 0.15, y + s * 0.30);
+      ctx.lineTo(x + s * 0.15, y + s * 0.60);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // Hill configuration with land types and appropriate colors
+    const hillConfigs = {
+      1: { color: "#2D5016", peak: 144, start: -350, end: 600, type: "single", landType: "forest" },
+      2: { color: "#2D5016", peak: 60, start: -150, end: 1000, type: "single", landType: "forest" },
+      3: { color: "#8B7355", peak: 105, start: 350, end: 1550, type: "single", landType: "cleared" },
+      4: { color: "#8B7355", peak: 75, start: 800, end: 1750, type: "single", landType: "cleared" },
+      5: { color: "#2D5016", peak: 50, start: 1050, end: 2000, type: "single", landType: "forest" },
+      6: { color: "#2D5016", peak: 72, start: 1500, end: 2750, type: "single", landType: "forest" },
+      7: { color: "#2D5016", peak: 70, start: 2400, end: 3500, type: "single", landType: "forest" },
+      8: { color: "#2D5016", peak: 245, start: -500, end: 1150, type: "single", landType: "forest" },
+      9: { color: "#8B7355", peak: 198, start: 200, end: 1300, type: "single", landType: "cleared" },
+      10:{ color: "#7CB342", peak: 345, start: 600, end: 2050, type: "single", landType: "commons" },
+      11:{ color: "#6B5D3F", peak: 242, start: 750, end: 3500, type: "single", landType: "farm", cropType: "cabbage", cropStage: "ready" },
+      12:{ color: "#6B5D3F", peak: 180, start: 1200, end: 2500, type: "single", landType: "farm", cropType: "wheat", cropStage: "ready" },
+      13:{ color: "#8B7355", peak: 245, start: 1750, end: 3350, type: "single", landType: "cleared" },
+      14:{ color: "#2D5016", peak: 499, start: -50, end: 1200, type: "single", landType: "forest" },
+      15:{ color: "#2D5016", peak1: 700, peak2: 687, valley: 656, start: 500, end: 2000, type: "double", landType: "forest" },
+      16:{ color: "#2D5016", peak: 493, start: 2350, end: 3500, type: "single", landType: "forest" },
+      17:{ color: "#2D5016", peak1: 571, peak2: 609, valley: 631, start: 2300, end: 3050, type: "double", landType: "forest" },
+      18:{ color: "#2D5016", peak: 525, start: 1550, end: 2750, type: "single", landType: "forest" }
+    };
+
+    // Initialize row ownership for farms (randomly assign ~1/3 to peasants)
+    function initializeRowOwnership(numLines) {
+      const ownership = [];
+      for (let i = 0; i < numLines; i++) {
+        ownership.push(Math.random() < 0.33 ? "peasant" : "player");
+      }
+      return ownership;
+    }
+
+    // Sheep animation state
+    const sheepState = {};
+    
+    function initializeSheep(hillNum, config) {
+      const { start, end } = config;
+      const width = end - start;
+      const hillTop = getHillTop(config);
+      const hillHeight = GROUND_Y - hillTop;
+      
+      const numSheep = 8 + Math.floor(hash2(hillNum, 999) * 8); // 8-15 sheep
+      const sheep = [];
+      
+      for (let i = 0; i < numSheep; i++) {
+        sheep.push({
+          x: start + width * hash2(i, hillNum),
+          yProgress: 0.3 + hash2(i + 100, hillNum) * 0.5,
+          speed: 0.3 + hash2(i + 500, hillNum) * 0.4, // Faster: 0.3-0.7 (was 0.1-0.25)
+          direction: hash2(i + 1000, hillNum) > 0.5 ? 1 : -1,
+          bounds: { start, end }
+        });
+      }
+      
+      return sheep;
+    }
+
+    function updateSheep(sheep) {
+      for (const s of sheep) {
+        s.x += s.direction * s.speed;
+        
+        // Turn around at boundaries
+        if (s.x < s.bounds.start + 50 || s.x > s.bounds.end - 50) {
+          s.direction *= -1;
+        }
+      }
+    }
+
+    // Add row ownership to farm hills and initialize crop tracking
+    for (const key in hillConfigs) {
+      if (hillConfigs[key].landType === "farm") {
+        const depth = 0.5;
+        const effectiveNumLines = Math.round(settings.numLines);
+        hillConfigs[key].rowOwnership = initializeRowOwnership(effectiveNumLines);
+        
+        // NEW: Track individual crops per row
+        hillConfigs[key].rowCrops = {};
+        for (let i = 0; i < effectiveNumLines; i++) {
+          hillConfigs[key].rowCrops[i] = []; // Array of {position: 0-100, stage: 'seed'/'growing'/'ready'}
+        }
+        
+        // Remove old cropStage system
+        delete hillConfigs[key].cropStage;
+      }
+      if (hillConfigs[key].landType === "commons") {
+        sheepState[key] = initializeSheep(key, hillConfigs[key]);
+      }
+    }
+
+    // Initialize sheep for commons
+    for (const key in hillConfigs) {
+      if (hillConfigs[key].landType === "commons") {
+        sheepState[key] = initializeSheep(key, hillConfigs[key]);
+      }
+    }
+
+    // ---------- Hill geometry ----------
+    function generateHillPath(hillNum, config) {
+      const { start, end, type } = config;
+
+      if (type === "double") {
+        const { peak1, peak2, valley } = config;
+        const mid = (start + end) / 2;
+        return `M ${start} ${GROUND_Y}
+          C ${start + 50} ${GROUND_Y}, ${start + 100} ${peak1}, ${start + 200} ${peak1}
+          C ${start + 250} ${peak1}, ${start + 275} ${valley}, ${mid} ${valley}
+          C ${mid + 25} ${valley}, ${mid + 50} ${peak2}, ${end - 200} ${peak2}
+          C ${end - 100} ${peak2}, ${end - 50} ${GROUND_Y}, ${end} ${GROUND_Y}
+          Z`;
+      } else {
+        const { peak } = config;
+        const mid = (start + end) / 2;
+        const width = end - start;
+        return `M ${start} ${GROUND_Y}
+          C ${start + width * 0.1} ${GROUND_Y}, ${start + width * 0.3} ${peak}, ${mid} ${peak}
+          C ${end - width * 0.3} ${peak}, ${end - width * 0.1} ${GROUND_Y}, ${end} ${GROUND_Y}
+          Z`;
+      }
+    }
+
+    // ---------- Folk crop rendering with stages ----------
+    function hash2(x, y) {
+      const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+      return s - Math.floor(s);
+    }
+
+    function setInk(ctx, w) {
+      ctx.strokeStyle = "rgba(28, 20, 16, 0.95)";
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.lineWidth = Math.max(1, w);
+    }
+
+    function fillAndInk(ctx, fill) {
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    function folkDiamond(ctx, x, y, r) {
+      ctx.beginPath();
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r, y);
+      ctx.lineTo(x, y + r);
+      ctx.lineTo(x - r, y);
+      ctx.closePath();
+    }
+
+    function littleFlies(ctx, x, y, s) {
+      ctx.save();
+      setInk(ctx, s * 0.06);
+      ctx.fillStyle = "rgba(28,20,16,0.65)";
+      for (let i = 0; i < 4; i++) {
+        const a = (Math.PI * 2 * i) / 4;
+        const r = (0.25 + 0.2 * i) * s;
+        ctx.beginPath();
+        ctx.arc(x + Math.cos(a) * r, y - 0.55 * s + Math.sin(a) * r, 0.08 * s, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawSprout(ctx, x, y, scale) {
+      const s = scale * 18; // 3x bigger (was 6)
+      const jitter = (hash2(x, y) - 0.5) * s * 0.18;
+      x += jitter; y += jitter * 0.3;
+
+      setInk(ctx, s * 0.10);
+
+      ctx.beginPath();
+      ctx.ellipse(x, y, 0.45 * s, 0.22 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#6B4A2E");
+
+      ctx.strokeStyle = "rgba(28,20,16,0.6)";
+      ctx.lineWidth = Math.max(1, s * 0.07);
+      ctx.beginPath();
+      ctx.moveTo(x, y - 0.10 * s);
+      ctx.lineTo(x, y - 0.65 * s);
+      ctx.stroke();
+
+      setInk(ctx, s * 0.09);
+      ctx.beginPath();
+      ctx.moveTo(x, y - 0.55 * s);
+      ctx.quadraticCurveTo(x - 0.35 * s, y - 0.85 * s, x - 0.55 * s, y - 0.55 * s);
+      ctx.closePath();
+      fillAndInk(ctx, "#7FCB73");
+
+      ctx.beginPath();
+      ctx.moveTo(x, y - 0.55 * s);
+      ctx.quadraticCurveTo(x + 0.35 * s, y - 0.85 * s, x + 0.55 * s, y - 0.55 * s);
+      ctx.closePath();
+      fillAndInk(ctx, "#6FAF64");
+    }
+
+    function drawHarvested(ctx, x, y, scale) {
+      const s = scale * 21; // 3x bigger (was 7)
+      const jitter = (hash2(x, y) - 0.5) * s * 0.16;
+      x += jitter; y += jitter * 0.25;
+
+      setInk(ctx, s * 0.10);
+
+      ctx.beginPath();
+      ctx.ellipse(x, y, 0.65 * s, 0.30 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#6B4A2E");
+
+      ctx.strokeStyle = "rgba(28,20,16,0.55)";
+      ctx.lineWidth = Math.max(1, s * 0.06);
+      for (let i = -2; i <= 2; i++) {
+        const xx = x + i * 0.18 * s;
+        ctx.beginPath();
+        ctx.moveTo(xx, y - 0.05 * s);
+        ctx.lineTo(xx + (hash2(xx, y) - 0.5) * 0.10 * s, y - 0.35 * s);
+        ctx.stroke();
+      }
+
+      setInk(ctx, s * 0.08);
+      folkDiamond(ctx, x, y - 0.05 * s, 0.16 * s);
+      fillAndInk(ctx, "#B88B5A");
+    }
+
+    function drawCabbage(ctx, stage, x, y, scale) {
+      const s = scale * 21; // 3x bigger (was 7)
+      setInk(ctx, s * 0.12);
+
+      const jitter = (hash2(x, y) - 0.5) * s * 0.18;
+      x += jitter; y += jitter * 0.35;
+
+      if (stage === "growing") {
+        ctx.beginPath();
+        ctx.ellipse(x, y, 0.70 * s, 0.55 * s, 0, 0, Math.PI * 2);
+        fillAndInk(ctx, "#7FCB73");
+        ctx.beginPath();
+        ctx.ellipse(x, y, 0.45 * s, 0.35 * s, 0, 0, Math.PI * 2);
+        fillAndInk(ctx, "#A6DFA0");
+        return;
+      }
+
+      if (stage === "rotting") {
+        ctx.beginPath();
+        ctx.ellipse(x, y + 0.10 * s, 0.95 * s, 0.65 * s, -0.15, 0, Math.PI * 2);
+        fillAndInk(ctx, "#6C7B5A");
+        ctx.beginPath();
+        ctx.ellipse(x, y + 0.12 * s, 0.55 * s, 0.40 * s, 0, 0, Math.PI * 2);
+        fillAndInk(ctx, "#8B8B73");
+        littleFlies(ctx, x, y, s);
+        return;
+      }
+
+      // ready
+      ctx.beginPath();
+      ctx.ellipse(x, y, 0.95 * s, 0.75 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#6FAF64");
+
+      ctx.beginPath();
+      ctx.ellipse(x, y, 0.65 * s, 0.50 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#8FCC7D");
+
+      ctx.strokeStyle = "rgba(28,20,16,0.55)";
+      ctx.lineWidth = Math.max(1, 0.9 * s * 0.06);
+      for (let i = 0; i < 5; i++) {
+        const a = (Math.PI * 2 * i) / 5 + (hash2(x + i, y) - 0.5) * 0.2;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(a) * 0.55 * s, y + Math.sin(a) * 0.40 * s);
+        ctx.stroke();
+      }
+
+      setInk(ctx, s * 0.08);
+      ctx.beginPath();
+      ctx.arc(x + 0.25 * s, y - 0.18 * s, 0.10 * s, 0, Math.PI * 2);
+      fillAndInk(ctx, "#E9F2D8");
+    }
+
+    function drawPumpkin(ctx, stage, x, y, scale) {
+      const s = scale * 22.5; // 3x bigger (was 7.5)
+      setInk(ctx, s * 0.12);
+
+      const wob = (hash2(x, y) - 0.5) * 0.10;
+      const rot = wob * 0.25;
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+
+      if (stage === "growing") {
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 0.70 * s, 0.52 * s, 0, 0, Math.PI * 2);
+        fillAndInk(ctx, "#E08A2B");
+        setInk(ctx, s * 0.10);
+        ctx.beginPath();
+        ctx.rect(-0.07 * s, -0.55 * s, 0.14 * s, 0.20 * s);
+        fillAndInk(ctx, "#6FAF64");
+        ctx.restore();
+        return;
+      }
+
+      if (stage === "rotting") {
+        ctx.beginPath();
+        ctx.ellipse(0, 0.10 * s, 1.05 * s, 0.65 * s, 0.08, 0, Math.PI * 2);
+        fillAndInk(ctx, "#9B6A3B");
+
+        ctx.fillStyle = "rgba(28,20,16,0.25)";
+        for (let i = 0; i < 5; i++) {
+          const px = (hash2(i, s) - 0.5) * 1.2 * s;
+          const py = (hash2(i + 9, s) - 0.5) * 0.6 * s;
+          ctx.beginPath();
+          ctx.ellipse(px, py, 0.12 * s, 0.08 * s, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        littleFlies(ctx, 0, 0, s);
+        ctx.restore();
+        return;
+      }
+
+      // ready
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 1.05 * s, 0.78 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#E06A2B");
+
+      ctx.strokeStyle = "rgba(28,20,16,0.55)";
+      ctx.lineWidth = Math.max(1, 0.9 * s * 0.06);
+      for (let i = -2; i <= 2; i++) {
+        ctx.beginPath();
+        ctx.ellipse(i * 0.22 * s, 0, 0.55 * s, 0.68 * s, 0, -Math.PI / 2, Math.PI / 2);
+        ctx.stroke();
+      }
+
+      setInk(ctx, s * 0.10);
+      ctx.beginPath();
+      ctx.moveTo(-0.12 * s, -0.78 * s);
+      ctx.lineTo(0.10 * s, -0.78 * s);
+      ctx.lineTo(0.18 * s, -1.05 * s);
+      ctx.lineTo(-0.02 * s, -1.05 * s);
+      ctx.closePath();
+      fillAndInk(ctx, "#6B4A2E");
+
+      ctx.restore();
+    }
+
+    function drawCorn(ctx, stage, x, y, scale) {
+      const s = scale * 24; // 3x bigger (was 8)
+      setInk(ctx, s * 0.12);
+
+      const lean = (hash2(x, y) - 0.5) * 0.20;
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(lean);
+
+      if (stage === "growing") {
+        ctx.beginPath();
+        ctx.moveTo(-0.08 * s, 0.05 * s);
+        ctx.lineTo(0.08 * s, 0.05 * s);
+        ctx.lineTo(0.12 * s, -0.95 * s);
+        ctx.lineTo(-0.02 * s, -0.95 * s);
+        ctx.closePath();
+        fillAndInk(ctx, "#7FCB73");
+
+        ctx.beginPath();
+        ctx.ellipse(0, -0.45 * s, 0.22 * s, 0.32 * s, 0, 0, Math.PI * 2);
+        fillAndInk(ctx, "#E6C36A");
+
+        ctx.restore();
+        return;
+      }
+
+      if (stage === "rotting") {
+        ctx.beginPath();
+        ctx.moveTo(-0.10 * s, 0.05 * s);
+        ctx.lineTo(0.10 * s, 0.05 * s);
+        ctx.lineTo(0.14 * s, -1.05 * s);
+        ctx.lineTo(-0.04 * s, -1.05 * s);
+        ctx.closePath();
+        fillAndInk(ctx, "#6C7B5A");
+
+        ctx.beginPath();
+        ctx.ellipse(0.10 * s, -0.20 * s, 0.30 * s, 0.45 * s, 0.35, 0, Math.PI * 2);
+        fillAndInk(ctx, "#9B8C63");
+
+        littleFlies(ctx, 0, 0, s);
+        ctx.restore();
+        return;
+      }
+
+      // ready
+      ctx.beginPath();
+      ctx.moveTo(-0.10 * s, 0.05 * s);
+      ctx.lineTo(0.10 * s, 0.05 * s);
+      ctx.lineTo(0.16 * s, -1.10 * s);
+      ctx.lineTo(-0.04 * s, -1.10 * s);
+      ctx.closePath();
+      fillAndInk(ctx, "#6FAF64");
+
+      ctx.beginPath();
+      ctx.moveTo(-0.15 * s, -0.55 * s);
+      ctx.lineTo(-0.65 * s, -0.20 * s);
+      ctx.lineTo(-0.10 * s, -0.10 * s);
+      ctx.closePath();
+      fillAndInk(ctx, "#7FCB73");
+
+      ctx.beginPath();
+      ctx.moveTo(0.15 * s, -0.55 * s);
+      ctx.lineTo(0.65 * s, -0.20 * s);
+      ctx.lineTo(0.10 * s, -0.10 * s);
+      ctx.closePath();
+      fillAndInk(ctx, "#7FCB73");
+
+      ctx.beginPath();
+      ctx.ellipse(0, -0.45 * s, 0.38 * s, 0.55 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#F2C94C");
+
+      ctx.strokeStyle = "rgba(28,20,16,0.55)";
+      ctx.lineWidth = Math.max(1, 0.85 * s * 0.05);
+      for (let r = -1; r <= 1; r++) {
+        for (let k = -2; k <= 2; k++) {
+          const px = k * 0.12 * s;
+          const py = -0.45 * s + r * 0.18 * s;
+          ctx.beginPath();
+          ctx.arc(px, py, 0.06 * s, 0, Math.PI * 2);
+          ctx.fillStyle = "#F7D97C";
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+
+      ctx.restore();
+    }
+
+    function drawWheat(ctx, stage, x, y, scale) {
+      const s = scale * 21; // 3x bigger (was 7)
+      setInk(ctx, s * 0.12);
+
+      const sway = (hash2(x, y) - 0.5) * 0.25;
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(sway);
+
+      if (stage === "growing") {
+        ctx.beginPath();
+        ctx.moveTo(-0.05 * s, 0.05 * s);
+        ctx.lineTo(0.05 * s, 0.05 * s);
+        ctx.lineTo(0.08 * s, -0.85 * s);
+        ctx.lineTo(0.00 * s, -0.85 * s);
+        ctx.closePath();
+        fillAndInk(ctx, "#7FCB73");
+
+        for (let i = 0; i < 4; i++) {
+          const yy = -0.85 * s + i * 0.15 * s;
+          ctx.beginPath();
+          ctx.ellipse(0, yy, 0.18 * s, 0.10 * s, 0, 0, Math.PI * 2);
+          fillAndInk(ctx, "#D9B45A");
+        }
+        ctx.restore();
+        return;
+      }
+
+      if (stage === "rotting") {
+        ctx.rotate(0.35);
+
+        ctx.beginPath();
+        ctx.moveTo(-0.05 * s, 0.05 * s);
+        ctx.lineTo(0.05 * s, 0.05 * s);
+        ctx.lineTo(0.10 * s, -1.00 * s);
+        ctx.lineTo(0.00 * s, -1.00 * s);
+        ctx.closePath();
+        fillAndInk(ctx, "#8B8B73");
+
+        for (let i = 0; i < 6; i++) {
+          const yy = -1.00 * s + i * 0.16 * s;
+          ctx.beginPath();
+          ctx.ellipse(0, yy, 0.20 * s, 0.11 * s, 0, 0, Math.PI * 2);
+          fillAndInk(ctx, "#9B8C63");
+        }
+        littleFlies(ctx, 0, 0, s);
+        ctx.restore();
+        return;
+      }
+
+      // ready
+      ctx.beginPath();
+      ctx.moveTo(-0.05 * s, 0.05 * s);
+      ctx.lineTo(0.05 * s, 0.05 * s);
+      ctx.lineTo(0.10 * s, -1.05 * s);
+      ctx.lineTo(0.00 * s, -1.05 * s);
+      ctx.closePath();
+      fillAndInk(ctx, "#D9B45A");
+
+      for (let i = 0; i < 6; i++) {
+        const yy = -1.05 * s + i * 0.16 * s;
+        ctx.beginPath();
+        ctx.ellipse(0, yy, 0.22 * s, 0.12 * s, 0, 0, Math.PI * 2);
+        fillAndInk(ctx, i % 2 === 0 ? "#E6C36A" : "#F1D27E");
+      }
+
+      setInk(ctx, s * 0.10);
+      ctx.beginPath();
+      ctx.rect(-0.18 * s, -0.20 * s, 0.36 * s, 0.14 * s);
+      fillAndInk(ctx, "#C35B4A");
+
+      ctx.restore();
+    }
+
+    function drawTurnip(ctx, stage, x, y, scale) {
+      const s = scale * 21; // 3x bigger (was 7)
+      setInk(ctx, s * 0.12);
+
+      const jitter = (hash2(x, y) - 0.5) * s * 0.14;
+      x += jitter; y += jitter * 0.25;
+
+      if (stage === "growing") {
+        ctx.beginPath();
+        ctx.ellipse(x, y, 0.48 * s, 0.58 * s, 0, 0, Math.PI * 2);
+        fillAndInk(ctx, "#F0E8F9");
+
+        setInk(ctx, s * 0.11);
+        ctx.beginPath();
+        ctx.moveTo(x - 0.05 * s, y - 0.55 * s);
+        ctx.quadraticCurveTo(x - 0.75 * s, y - 1.10 * s, x - 0.35 * s, y - 0.30 * s);
+        ctx.closePath();
+        fillAndInk(ctx, "#7FCB73");
+
+        ctx.beginPath();
+        ctx.moveTo(x + 0.05 * s, y - 0.55 * s);
+        ctx.quadraticCurveTo(x + 0.75 * s, y - 1.10 * s, x + 0.35 * s, y - 0.30 * s);
+        ctx.closePath();
+        fillAndInk(ctx, "#6FAF64");
+        return;
+      }
+
+      if (stage === "rotting") {
+        ctx.beginPath();
+        ctx.ellipse(x, y + 0.15 * s, 0.72 * s, 0.70 * s, 0.10, 0, Math.PI * 2);
+        fillAndInk(ctx, "#B7A7C6");
+
+        ctx.beginPath();
+        ctx.ellipse(x, y + 0.25 * s, 0.72 * s, 0.48 * s, 0, 0, Math.PI);
+        ctx.closePath();
+        fillAndInk(ctx, "#7B4A94");
+
+        ctx.fillStyle = "rgba(28,20,16,0.22)";
+        for (let i = 0; i < 4; i++) {
+          const px = x + (hash2(i, y) - 0.5) * 0.8 * s;
+          const py = y + (hash2(i + 11, x) - 0.5) * 0.5 * s;
+          ctx.beginPath();
+          ctx.ellipse(px, py, 0.10 * s, 0.07 * s, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        littleFlies(ctx, x, y, s);
+        return;
+      }
+
+      // ready
+      ctx.beginPath();
+      ctx.ellipse(x, y, 0.70 * s, 0.85 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#F0E8F9");
+
+      ctx.beginPath();
+      ctx.ellipse(x, y + 0.15 * s, 0.70 * s, 0.60 * s, 0, 0, Math.PI);
+      ctx.closePath();
+      fillAndInk(ctx, "#B06AD6");
+
+      setInk(ctx, s * 0.10);
+      folkDiamond(ctx, x, y + 0.05 * s, 0.18 * s);
+      fillAndInk(ctx, "#F7F2FF");
+
+      setInk(ctx, s * 0.11);
+      ctx.beginPath();
+      ctx.moveTo(x - 0.10 * s, y - 0.75 * s);
+      ctx.quadraticCurveTo(x - 0.75 * s, y - 1.10 * s, x - 0.45 * s, y - 0.35 * s);
+      ctx.quadraticCurveTo(x - 0.25 * s, y - 0.05 * s, x - 0.05 * s, y - 0.25 * s);
+      ctx.closePath();
+      fillAndInk(ctx, "#6FAF64");
+
+      ctx.beginPath();
+      ctx.moveTo(x + 0.10 * s, y - 0.75 * s);
+      ctx.quadraticCurveTo(x + 0.75 * s, y - 1.10 * s, x + 0.45 * s, y - 0.35 * s);
+      ctx.quadraticCurveTo(x + 0.25 * s, y - 0.05 * s, x + 0.05 * s, y - 0.25 * s);
+      ctx.closePath();
+      fillAndInk(ctx, "#7FCB73");
+    }
+
+    function drawCrop(ctx, cropType, stage, x, y, scale) {
+      stage = stage || "ready";
+
+      if (stage === "sprout") {
+        drawSprout(ctx, x, y, scale);
+        return;
+      }
+      if (stage === "harvested") {
+        drawHarvested(ctx, x, y, scale);
+        return;
+      }
+
+      switch (cropType) {
+        case "cabbage": drawCabbage(ctx, stage, x, y, scale); break;
+        case "pumpkin": drawPumpkin(ctx, stage, x, y, scale); break;
+        case "corn":    drawCorn(ctx, stage, x, y, scale); break;
+        case "wheat":   drawWheat(ctx, stage, x, y, scale); break;
+        case "turnip":  drawTurnip(ctx, stage, x, y, scale); break;
+      }
+    }
+
+    // ---------- Sheep for commons ----------
+    function drawSheep(ctx, x, y, scale, direction) {
+      const s = scale * 15;
+      const jitter = (hash2(x, y) - 0.5) * s * 0.15;
+      x += jitter;
+
+      setInk(ctx, s * 0.10);
+
+      // Flip horizontally based on direction (FIXED: inverted the logic)
+      const facing = -(direction || 1); // Negative to fix backwards sheep
+
+      // Body (fluffy white)
+      ctx.beginPath();
+      ctx.ellipse(x, y, 0.55 * s, 0.40 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#F5F5F5");
+
+      // Head (position changes based on direction)
+      ctx.beginPath();
+      ctx.ellipse(x - (0.45 * s * facing), y - 0.15 * s, 0.25 * s, 0.22 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#E8E8E8");
+
+      // Legs
+      ctx.strokeStyle = "rgba(28,20,16,0.8)";
+      ctx.lineWidth = Math.max(1, s * 0.08);
+      for (let i = 0; i < 4; i++) {
+        const legX = x - 0.30 * s + i * 0.20 * s;
+        ctx.beginPath();
+        ctx.moveTo(legX, y + 0.30 * s);
+        ctx.lineTo(legX, y + 0.55 * s);
+        ctx.stroke();
+      }
+
+      // Eyes (tiny dots) - position changes based on direction
+      ctx.fillStyle = "rgba(28,20,16,0.9)";
+      ctx.beginPath();
+      ctx.arc(x - (0.50 * s * facing), y - 0.18 * s, 0.04 * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ---------- Trees for forest (folk variants + altitude-biased pines) ----------
+    function drawTree(ctx, x, y, scale, hillNum = 0, idx = 0, heightProgress01 = 0.5) {
+      const s = scale * 22;
+      const r0 = hash2(idx + 13, hillNum + 71);
+
+      // Folk palettes (flat fills + ink)
+      const greens = ["#2D5016", "#3A6B1E", "#4A7B2A", "#2F5A23"];
+      const olives = ["#556B2F", "#6B7B3A", "#4F6A2D"];
+      const autumn = ["#B5532A", "#C86A2D", "#D08B2C", "#8E3B2B", "#A04B1E"];
+
+      // Stable "season" per hill
+      const seasonPick = hash2(hillNum * 9.7, 222);
+      const palette =
+        seasonPick < 0.18 ? autumn :
+        seasonPick < 0.32 ? olives :
+        greens;
+
+      function pick(arr, t) { return arr[Math.floor(clamp01(t) * (arr.length - 1))]; }
+
+      // Jitter / lean
+      const jitter = (hash2(x * 0.01, y * 0.01) - 0.5) * s * 0.10;
+      x += jitter;
+      const lean = (r0 - 0.5) * 0.18;
+
+      setInk(ctx, s * 0.09);
+
+      // ALTITUDE BIAS: heightProgress01 = 0 at bottom of hill, 1 near top
+      const alt = clamp01(heightProgress01);
+
+      // Base style weights (folk mix)
+      let wLollipop = 0.32;
+      let wCloud    = 0.28;
+      let wPine     = 0.18; // spire/cypress
+      let wBare     = 0.10;
+      let wOrchard  = 0.12;
+
+      // Push pines upward: at high altitudes, add weight to pine
+      const pineBoost = lerp(0.00, 0.22, alt);
+      wPine += pineBoost;
+      wOrchard = Math.max(0.04, wOrchard - pineBoost * 0.60);
+      wLollipop = Math.max(0.10, wLollipop - pineBoost * 0.25);
+      wCloud    = Math.max(0.10, wCloud    - pineBoost * 0.15);
+
+      // Normalize weights
+      const sum = wLollipop + wCloud + wPine + wBare + wOrchard;
+      wLollipop /= sum; wCloud /= sum; wPine /= sum; wBare /= sum; wOrchard /= sum;
+
+      // Pick style by cumulative probability
+      const u = r0;
+      const style =
+        (u < wLollipop) ? 0 :
+        (u < wLollipop + wCloud) ? 1 :
+        (u < wLollipop + wCloud + wPine) ? 2 :
+        (u < wLollipop + wCloud + wPine + wBare) ? 3 : 4;
+
+      // Helpers
+      function trunk(trunkW, trunkH, color = "#2B1B12") {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(lean);
+        ctx.beginPath();
+        ctx.rect(-trunkW * 0.5, -trunkH, trunkW, trunkH);
+        fillAndInk(ctx, color);
+        ctx.restore();
+      }
+
+      function dotLeaves(cx, cy, rad, count, colA, colB) {
+        ctx.save();
+        ctx.fillStyle = "rgba(28,20,16,0.18)";
+        for (let i = 0; i < count; i++) {
+          const a = (Math.PI * 2 * i) / count + hash2(i + idx, hillNum) * 0.7;
+          const rr = rad * (0.15 + hash2(i + 90, hillNum) * 0.90);
+          ctx.beginPath();
+          ctx.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, 0.05 * s, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        setInk(ctx, s * 0.07);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rad, rad * 0.86, 0, 0, Math.PI * 2);
+        fillAndInk(ctx, colA);
+
+        ctx.globalAlpha = 0.95;
+        ctx.beginPath();
+        ctx.ellipse(cx - rad * 0.18, cy - rad * 0.18, rad * 0.62, rad * 0.52, -0.2, 0, Math.PI * 2);
+        fillAndInk(ctx, colB);
+        ctx.restore();
+      }
+
+      // --- STYLE 0: Lollipop ---
+      if (style === 0) {
+        const trunkW = 0.14 * s;
+        const trunkH = 0.70 * s;
+        trunk(trunkW, trunkH, "#3B2417");
+
+        const colA = pick(palette, hash2(idx + 1, hillNum));
+        const colB = pick(palette, hash2(idx + 7, hillNum));
+        const cx = x;
+        const cy = y - trunkH - 0.05 * s;
+        const rad = 0.52 * s;
+
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rad, rad * 0.90, 0, 0, Math.PI * 2);
+        fillAndInk(ctx, colA);
+
+        ctx.strokeStyle = "rgba(28,20,16,0.45)";
+        ctx.lineWidth = Math.max(1, s * 0.05);
+        for (let i = 0; i < 7; i++) {
+          const a = (Math.PI * 2 * i) / 7;
+          ctx.beginPath();
+          ctx.arc(cx + Math.cos(a) * rad * 0.72, cy + Math.sin(a) * rad * 0.62, rad * 0.20, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.fillStyle = "rgba(28,20,16,0.14)";
+        for (let i = 0; i < 14; i++) {
+          const px = cx + (hash2(i + 10, idx) - 0.5) * rad * 1.3;
+          const py = cy + (hash2(i + 30, hillNum) - 0.5) * rad * 1.1;
+          ctx.beginPath();
+          ctx.arc(px, py, 0.05 * s, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        setInk(ctx, s * 0.06);
+        ctx.beginPath();
+        ctx.ellipse(cx - rad * 0.20, cy - rad * 0.20, rad * 0.55, rad * 0.45, -0.25, 0, Math.PI * 2);
+        fillAndInk(ctx, colB);
+        return;
+      }
+
+      // --- STYLE 1: Cloud canopy ---
+      if (style === 1) {
+        const trunkW = 0.14 * s;
+        const trunkH = 0.70 * s;
+        trunk(trunkW, trunkH, "#3B2417");
+
+        const colA = pick(palette, hash2(idx + 3, hillNum));
+        const colB = pick(palette, hash2(idx + 9, hillNum));
+        const baseY = y - trunkH - 0.05 * s;
+
+        ctx.save();
+        ctx.translate(x, baseY);
+        ctx.rotate(lean * 0.35);
+
+        const rA = 0.36 * s;
+        const rB = 0.42 * s;
+        const rC = 0.34 * s;
+
+        ctx.beginPath();
+        ctx.arc(-0.25 * s, 0.05 * s, rA, 0, Math.PI * 2);
+        ctx.arc(0.10 * s, -0.12 * s, rB, 0, Math.PI * 2);
+        ctx.arc(0.40 * s, 0.08 * s, rC, 0, Math.PI * 2);
+        fillAndInk(ctx, colA);
+
+        setInk(ctx, s * 0.06);
+        ctx.beginPath();
+        ctx.arc(0.02 * s, -0.22 * s, 0.26 * s, 0, Math.PI * 2);
+        fillAndInk(ctx, colB);
+
+        ctx.fillStyle = "rgba(28,20,16,0.14)";
+        for (let i = 0; i < 12; i++) {
+          const px = (hash2(i + 50, idx) - 0.5) * 0.9 * s;
+          const py = (hash2(i + 80, hillNum) - 0.5) * 0.55 * s;
+          ctx.beginPath();
+          ctx.arc(px, py, 0.05 * s, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.restore();
+        return;
+      }
+
+      // --- STYLE 2: Pine/Cypress spire (more common at high altitude) ---
+      if (style === 2) {
+        const trunkW = 0.12 * s;
+        const trunkH = 0.50 * s;
+        trunk(trunkW, trunkH, "#2F1E14");
+
+        const colA = pick(olives, hash2(idx + 5, hillNum));
+        const colB = pick(greens, hash2(idx + 11, hillNum));
+
+        ctx.save();
+        ctx.translate(x, y - trunkH - 0.05 * s);
+        ctx.rotate(lean * 0.25);
+
+        // Make high-altitude pines a touch taller/slimmer
+        const tall = lerp(1.00, 1.18, alt);
+        const slim = lerp(1.00, 0.88, alt);
+
+        ctx.beginPath();
+        ctx.ellipse(0, -0.35 * s * tall, 0.22 * s * slim, 0.70 * s * tall, 0, 0, Math.PI * 2);
+        fillAndInk(ctx, colA);
+
+        setInk(ctx, s * 0.06);
+        ctx.beginPath();
+        ctx.ellipse(-0.05 * s, -0.42 * s * tall, 0.12 * s * slim, 0.45 * s * tall, -0.1, 0, Math.PI * 2);
+        fillAndInk(ctx, colB);
+
+        ctx.restore();
+        return;
+      }
+
+      // --- STYLE 3: Bare tree ---
+      if (style === 3) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(lean);
+
+        ctx.strokeStyle = "rgba(28,20,16,0.90)";
+        ctx.lineWidth = Math.max(1, s * 0.08);
+
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(0, -0.95 * s);
+        ctx.stroke();
+
+        const branches = 5 + Math.floor(hash2(idx + 101, hillNum) * 3);
+        for (let i = 0; i < branches; i++) {
+          const t = (i + 1) / (branches + 1);
+          const by = -0.25 * s - t * 0.65 * s;
+          const dir = (i % 2 === 0) ? 1 : -1;
+          const bx = dir * (0.18 * s + hash2(i + 77, idx) * 0.28 * s);
+
+          ctx.beginPath();
+          ctx.moveTo(0, by);
+          ctx.quadraticCurveTo(bx * 0.35, by - 0.10 * s, bx, by - 0.20 * s);
+          ctx.stroke();
+
+          ctx.lineWidth = Math.max(1, s * 0.05);
+          ctx.beginPath();
+          ctx.moveTo(bx, by - 0.20 * s);
+          ctx.lineTo(bx + dir * 0.12 * s, by - 0.30 * s);
+          ctx.stroke();
+
+          ctx.lineWidth = Math.max(1, s * 0.08);
+        }
+
+        ctx.restore();
+        return;
+      }
+
+      // --- STYLE 4: Orchard tree ---
+      {
+        const trunkW = 0.14 * s;
+        const trunkH = 0.65 * s;
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(lean);
+
+        setInk(ctx, s * 0.09);
+        ctx.beginPath();
+        ctx.rect(-trunkW * 0.5, -trunkH, trunkW, trunkH);
+        fillAndInk(ctx, "#3B2417");
+
+        ctx.strokeStyle = "rgba(28,20,16,0.85)";
+        ctx.lineWidth = Math.max(1, s * 0.07);
+        ctx.beginPath();
+        ctx.moveTo(0, -0.55 * s);
+        ctx.lineTo(-0.18 * s, -0.85 * s);
+        ctx.moveTo(0, -0.55 * s);
+        ctx.lineTo(0.22 * s, -0.82 * s);
+        ctx.stroke();
+
+        const colA = pick(palette, hash2(idx + 19, hillNum));
+        const colB = pick(palette, hash2(idx + 33, hillNum));
+        const cx = 0;
+        const cy = -trunkH - 0.05 * s;
+        const rad = 0.48 * s;
+
+        dotLeaves(cx, cy, rad, 10, colA, colB);
+
+        ctx.restore();
+      }
+    }
+
+    // ---------- Stumps for cleared land ----------
+    function drawStump(ctx, x, y, scale) {
+      const s = scale * 12;
+      const jitter = (hash2(x, y) - 0.5) * s * 0.25;
+      x += jitter;
+
+      setInk(ctx, s * 0.12);
+
+      // Stump base
+      ctx.beginPath();
+      ctx.ellipse(x, y, 0.35 * s, 0.18 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#8B6F47");
+
+      // Stump top
+      ctx.beginPath();
+      ctx.ellipse(x, y - 0.15 * s, 0.35 * s, 0.18 * s, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "#A0826B");
+
+      // Tree rings
+      ctx.strokeStyle = "rgba(28,20,16,0.4)";
+      ctx.lineWidth = Math.max(1, s * 0.05);
+      for (let i = 1; i <= 3; i++) {
+        ctx.beginPath();
+        ctx.ellipse(x, y - 0.15 * s, (0.08 * i) * s, (0.04 * i) * s, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    // ===== DROP-IN: Folk house renderer =====
+    function drawFolkHouse(ctx, house){
+      const { x, y, s, windows, litCount, color, roofColor } = house;
+
+      ctx.save();
+      ctx.translate(x, y);
+
+      // slight wobble so they don't look stamped
+      const wob = (hash2(x, y) - 0.5) * 0.10;
+      ctx.rotate(wob);
+
+      // ink style (matches your folk crops)
+      setInk(ctx, Math.max(1, s * 0.10));
+
+      // --- shadow/ground pad
+      ctx.beginPath();
+      ctx.ellipse(0, s * 1.55, s * 1.15, s * 0.35, 0, 0, Math.PI * 2);
+      fillAndInk(ctx, "rgba(28,20,16,0.10)");
+
+      // --- house body
+      ctx.beginPath();
+      ctx.rect(-s*1.2, -s*0.2, s*2.4, s*1.8);
+      fillAndInk(ctx, color);
+
+      // --- roof
+      ctx.beginPath();
+      ctx.moveTo(-s*1.35, -s*0.2);
+      ctx.lineTo(0, -s*1.45);
+      ctx.lineTo(s*1.35, -s*0.2);
+      ctx.closePath();
+      fillAndInk(ctx, roofColor);
+
+      // --- chimney
+      ctx.beginPath();
+      ctx.rect(s*0.65, -s*1.20, s*0.28, s*0.70);
+      fillAndInk(ctx, "#6B4A2E");
+
+      // --- door
+      ctx.beginPath();
+      ctx.rect(-s*0.25, s*0.55, s*0.50, s*1.05);
+      fillAndInk(ctx, "#C35B4A");
+
+      // door knob
+      ctx.beginPath();
+      ctx.arc(s*0.16, s*1.05, s*0.06, 0, Math.PI*2);
+      fillAndInk(ctx, "#F1D27E");
+
+      // --- windows (2–4), litCount decides how many glow
+      const winW = s*0.38, winH = s*0.34;
+      const gapX = s*0.22, gapY = s*0.22;
+
+      // positions (centered on left/right)
+      const slots = [];
+      if (windows === 2) {
+        slots.push({cx:- (gapX+winW/2), cy:s*0.25});
+        slots.push({cx:+ (gapX+winW/2), cy:s*0.25});
+      } else if (windows === 3) {
+        slots.push({cx:- (gapX+winW/2), cy:s*0.20});
+        slots.push({cx:+ (gapX+winW/2), cy:s*0.20});
+        slots.push({cx:0,              cy:s*0.62});
+      } else { // 4
+        slots.push({cx:- (gapX+winW/2), cy:s*0.12});
+        slots.push({cx:+ (gapX+winW/2), cy:s*0.12});
+        slots.push({cx:- (gapX+winW/2), cy:s*0.62});
+        slots.push({cx:+ (gapX+winW/2), cy:s*0.62});
+      }
+
+      for (let i=0; i<slots.length; i++){
+        const lit = i < litCount;
+
+        // frame
+        ctx.beginPath();
+        ctx.rect(slots[i].cx - winW/2, slots[i].cy - winH/2, winW, winH);
+        fillAndInk(ctx, "#EEE8DC");
+
+        // pane
+        ctx.beginPath();
+        ctx.rect(slots[i].cx - winW/2 + s*0.06, slots[i].cy - winH/2 + s*0.06, winW - s*0.12, winH - s*0.12);
+        fillAndInk(ctx, lit ? "#F7D97C" : "#42505A");
+
+        // cross bars
+        ctx.strokeStyle = "rgba(28,20,16,0.55)";
+        ctx.lineWidth = Math.max(1, s*0.06);
+        ctx.beginPath();
+        ctx.moveTo(slots[i].cx, slots[i].cy - winH/2 + s*0.06);
+        ctx.lineTo(slots[i].cx, slots[i].cy + winH/2 - s*0.06);
+        ctx.moveTo(slots[i].cx - winW/2 + s*0.06, slots[i].cy);
+        ctx.lineTo(slots[i].cx + winW/2 - s*0.06, slots[i].cy);
+        ctx.stroke();
+
+        // glow halo if lit
+        if (lit){
+          ctx.fillStyle = "rgba(247,217,124,0.18)";
+          ctx.beginPath();
+          ctx.ellipse(slots[i].cx, slots[i].cy, winW*0.75, winH*0.85, 0, 0, Math.PI*2);
+          ctx.fill();
+        }
+      }
+
+      ctx.restore();
+    }
+
+    // ---------- Front/back layering controls ----------
+    function getHillTop(config) {
+      return (typeof config.peak === "number") ? config.peak : Math.min(config.peak1 ?? 9999, config.peak2 ?? 9999, config.valley ?? 9999);
+    }
+
+    const PEAK_STATS = (() => {
+      let minP = Infinity, maxP = -Infinity;
+      for (const k in hillConfigs) {
+        const p = getHillTop(hillConfigs[k]);
+        if (isFinite(p)) { minP = Math.min(minP, p); maxP = Math.max(maxP, p); }
+      }
+      if (!isFinite(minP) || !isFinite(maxP) || minP === maxP) return { minP: 0, maxP: 1 };
+      return { minP, maxP };
+    })();
+
+    function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+    function lerp(a, b, t) { return a + (b - a) * t; }
+
+    function depthOfHill(config) {
+      const p = getHillTop(config);
+      return clamp01((p - PEAK_STATS.minP) / (PEAK_STATS.maxP - PEAK_STATS.minP));
+    }
+
+    // ---------- Crop rows (only for farms) ----------
+    function drawCropPosts(hillNum, config) {
+      const { start, end, cropType, landType, rowCrops } = config;
+      
+      if (landType !== "farm") return;
+      if (!rowCrops) return; // No crop data yet
+
+      const width = end - start;
+      const hillTop = getHillTop(config);
+      const hillHeight = GROUND_Y - hillTop;
+      const depth = depthOfHill(config);
+
+      const spacingMult = lerp(0.65, 1.45, depth);
+      const cropSizeMult = lerp(0.70, 1.35, depth);
+
+      const effectiveNumLines = Math.round(clamp01(lerp(0.95, 1.10, 1 - depth)) * settings.numLines);
+      const effectiveSpacing = settings.lineSpacing * spacingMult;
+
+      const slope = (hillNum % 2 === 0) ? 1 : -1;
+      const hillPath = new Path2D(generateHillPath(hillNum, config));
+
+      for (let lineIdx = 0; lineIdx < effectiveNumLines; lineIdx++) {
+        const offset = (lineIdx - effectiveNumLines / 2) * effectiveSpacing;
+        const owner = config.rowOwnership?.[lineIdx] || "player";
+        
+        // Draw row line with clipping
+        ctx.save();
+        ctx.clip(hillPath);
+        
+        ctx.strokeStyle = owner === "player" ? "rgba(28,20,16,0.70)" : "rgba(139,111,78,0.60)";
+        ctx.lineWidth = lerp(1.2, 2.2, depth);
+
+        ctx.beginPath();
+        const segments = 60;
+        const linePoints = [];
+
+        for (let seg = 0; seg <= segments; seg++) {
+          const t = seg / segments;
+          const x = start + width * t;
+          const centerX = start + width / 2;
+          const centerY = hillTop + hillHeight / 2;
+          let y = slope * (x - centerX) + centerY + offset;
+
+          if (settings.curveAmount > 0) {
+            const distFromCenter = 1 - Math.abs(t - 0.5) * 2;
+            const parabolicCurve = distFromCenter * distFromCenter * settings.curveAmount;
+            y += parabolicCurve * lerp(0.9, 1.15, depth);
+          }
+
+          linePoints.push({ x, y, progress: t * 100 });
+          if (seg === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.restore();
+
+        // Draw only the crops that have been planted on this row
+        const rowCropList = rowCrops[lineIdx] || [];
+        for (const crop of rowCropList) {
+          // Find the point at this progress along the row
+          const pointIdx = Math.floor((crop.position / 100) * linePoints.length);
+          const point = linePoints[Math.min(pointIdx, linePoints.length - 1)];
+
+          if (!ctx.isPointInPath(hillPath, point.x, point.y)) continue;
+
+          const heightProgress = clamp01((GROUND_Y - point.y) / Math.max(1, hillHeight));
+          const withinHillScale = 1.05 - heightProgress * 0.35;
+          const scale = withinHillScale * cropSizeMult;
+
+          drawCrop(ctx, cropType || 'wheat', crop.stage, point.x, point.y, scale);
+        }
+      }
+    }
+
+    // ---------- Sheep on commons ----------
+    function drawCommonsContent(hillNum, config) {
+      const hillPath = new Path2D(generateHillPath(hillNum, config));
+      const hillTop = getHillTop(config);
+      const hillHeight = GROUND_Y - hillTop;
+      const depth = depthOfHill(config);
+
+      // Draw animated sheep - check if base is within the hill path
+      const sheep = sheepState[hillNum] || [];
+      for (const s of sheep) {
+        const y = GROUND_Y - hillHeight * s.yProgress;
+
+        // Check if the sheep's base position is actually on the hill
+        if (!ctx.isPointInPath(hillPath, s.x, y)) continue;
+
+        const heightProgress = clamp01((GROUND_Y - y) / Math.max(1, hillHeight));
+        const scale = (1.05 - heightProgress * 0.35) * lerp(0.70, 1.35, depth);
+
+        drawSheep(ctx, s.x, y, scale, s.direction);
+      }
+    }
+
+    // ---------- Trees on forest ----------
+    function drawForestContent(hillNum, config) {
+      const { start, end } = config;
+      const width = end - start;
+      const hillPath = new Path2D(generateHillPath(hillNum, config));
+
+      const hillTop = getHillTop(config);
+      const hillHeight = GROUND_Y - hillTop;
+      const depth = depthOfHill(config);
+
+      // More even distribution with less bunching
+      const baseTrees = Math.floor(width / 8); // More trees overall
+      const numClusters = Math.max(5, Math.floor(width / 180)); // More, smaller clusters
+      const treesPerCluster = Math.max(6, Math.floor(baseTrees / numClusters));
+
+      let globalIdx = 0;
+
+      for (let c = 0; c < numClusters; c++) {
+        const cx = start + width * (0.05 + 0.90 * hash2(c + 10, hillNum));
+        const spread = lerp(120, 220, hash2(c + 99, hillNum)); // Wider spread
+
+        for (let i = 0; i < treesPerCluster; i++) {
+          const r = hash2(i + 2000 + c * 77, hillNum);
+
+          const x = cx + (r - 0.5) * spread;
+
+          const yProgress = 0.22 + hash2(i + 3000, hillNum + c) * 0.62;
+          const y = GROUND_Y - hillHeight * yProgress;
+
+          if (!ctx.isPointInPath(hillPath, x, y)) continue;
+
+          const heightProgress = clamp01((GROUND_Y - y) / Math.max(1, hillHeight));
+          const scale = (1.18 - heightProgress * 0.42) * lerp(0.85, 1.85, depth);
+
+          // Pass heightProgress to bias pines at higher altitude
+          drawTree(ctx, x, y, scale, hillNum, globalIdx++, heightProgress);
+        }
+      }
+
+      // More lone trees scattered around
+      const loners = Math.floor(12 + hash2(hillNum, 444) * 15); // More loners
+      for (let i = 0; i < loners; i++) {
+        const x = start + width * hash2(i + 500, hillNum);
+        const yProgress = 0.25 + hash2(i + 800, hillNum) * 0.55;
+        const y = GROUND_Y - hillHeight * yProgress;
+
+        if (!ctx.isPointInPath(hillPath, x, y)) continue;
+
+        const heightProgress = clamp01((GROUND_Y - y) / Math.max(1, hillHeight));
+        const scale = (1.10 - heightProgress * 0.40) * lerp(0.75, 1.65, depth);
+
+        drawTree(ctx, x, y, scale, hillNum, globalIdx++, heightProgress);
+      }
+    }
+
+    // ---------- Stumps on cleared land ----------
+    function drawClearedContent(hillNum, config) {
+      const { start, end } = config;
+      const width = end - start;
+      const hillPath = new Path2D(generateHillPath(hillNum, config));
+
+      const hillTop = getHillTop(config);
+      const hillHeight = GROUND_Y - hillTop;
+      const depth = depthOfHill(config);
+
+      // More stumps with seeded random for consistency (no more static!)
+      const numStumps = Math.floor(18 + hash2(hillNum, 777) * 20); // 18-38 stumps
+      for (let i = 0; i < numStumps; i++) {
+        const xProgress = (i + 0.5 + (hash2(i, hillNum + 50) - 0.5) * 0.5) / numStumps;
+        const x = start + width * xProgress;
+        
+        const yProgress = 0.3 + hash2(i + 150, hillNum) * 0.5;
+        const y = GROUND_Y - hillHeight * yProgress;
+
+        // Check if stump base is within the hill path
+        if (!ctx.isPointInPath(hillPath, x, y)) continue;
+
+        const heightProgress = clamp01((GROUND_Y - y) / Math.max(1, hillHeight));
+        const scale = (1.05 - heightProgress * 0.35) * lerp(0.70, 1.35, depth);
+
+        drawStump(ctx, x, y, scale);
+      }
+
+      // Add a few remaining trees (survivors)
+      const numTrees = Math.floor(3 + hash2(hillNum, 888) * 5); // 3-8 trees
+      for (let i = 0; i < numTrees; i++) {
+        const xProgress = hash2(i + 300, hillNum);
+        const x = start + width * xProgress;
+        
+        const yProgress = 0.25 + hash2(i + 400, hillNum) * 0.55;
+        const y = GROUND_Y - hillHeight * yProgress;
+
+        // Check if tree base is within the hill path
+        if (!ctx.isPointInPath(hillPath, x, y)) continue;
+
+        const heightProgress = clamp01((GROUND_Y - y) / Math.max(1, hillHeight));
+        const scale = (1.05 - heightProgress * 0.35) * lerp(0.70, 1.35, depth);
+
+        drawTree(ctx, x, y, scale, hillNum, i + 1000, heightProgress);
+      }
+    }
+
+    // ---------- Render ----------
+    function redrawHills() {
+      ctx.clearRect(0, 0, 3000, 800);
+
+      const skyGradient = ctx.createLinearGradient(0, 0, 0, 800);
+      skyGradient.addColorStop(0, "#87CEEB");
+      skyGradient.addColorStop(1, "#B0E0E6");
+      ctx.fillStyle = skyGradient;
+      ctx.fillRect(0, 0, 3000, 800);
+
+      const keys = Object.keys(hillConfigs).map(n => parseInt(n, 10));
+      keys.sort((a, b) => getHillTop(hillConfigs[a]) - getHillTop(hillConfigs[b]));
+
+      // Draw everything in depth order: back to front
+      for (const i of keys) {
+        const config = hillConfigs[i];
+        const hillDepth = depthOfHill(config);
+
+        // Draw hill shape
+        ctx.fillStyle = config.color;
+        const path = new Path2D(generateHillPath(i, config));
+        ctx.fill(path);
+
+        // Add subtle border
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.15)";
+        ctx.lineWidth = 2;
+        ctx.stroke(path);
+
+        // Draw content based on land type
+        switch(config.landType) {
+          case "farm":
+            drawCropPosts(i, config);
+            break;
+          case "commons":
+            drawCommonsContent(i, config);
+            break;
+          case "forest":
+            drawForestContent(i, config);
+            break;
+          case "cleared":
+            drawClearedContent(i, config);
+            break;
+        }
+
+        // Draw houses on this hill
+        if (game.houses[i]) {
+          for (const house of game.houses[i]) {
+            drawFolkHouse(ctx, house);
+          }
+        }
+
+        // Draw peasants working on this hill (matching depth)
+        for (const peasant of game.peasants) {
+          // Draw peasants that are working on this specific hill's depth layer
+          if (Math.abs(peasant.workDepth - hillDepth) < 0.01) {
+            drawPeasant(ctx, peasant);
+          }
+        }
+      }
+
+      // Draw idle/traveling peasants on top (not assigned to specific hills)
+      for (const peasant of game.peasants) {
+        if (peasant.task === PEASANT_TASKS.IDLE || peasant.task === PEASANT_TASKS.WALKING_HOME) {
+          drawPeasant(ctx, peasant);
+        }
+      }
+    }
+
+    // ---------- Click detection for hills ----------
+    function getClickedHill(canvasX, canvasY) {
+      // Check hills from front to back (reverse render order)
+      const keys = Object.keys(hillConfigs).map(n => parseInt(n, 10));
+      keys.sort((a, b) => getHillTop(hillConfigs[b]) - getHillTop(hillConfigs[a]));
+
+      for (const i of keys) {
+        const config = hillConfigs[i];
+        const path = new Path2D(generateHillPath(i, config));
+        
+        if (ctx.isPointInPath(path, canvasX, canvasY)) {
+          return i;
+        }
+      }
+      return null;
+    }
+
+    function showHillPopup(hillNum) {
+      const config = hillConfigs[hillNum];
+      const landTypeNames = {
+        "farm": "Farm",
+        "commons": "Commons",
+        "forest": "Forest",
+        "cleared": "Cleared Land"
+      };
+
+      let info = `Type: ${landTypeNames[config.landType] || config.landType}`;
+      
+      if (config.landType === "farm") {
+        const playerRows = config.rowOwnership?.filter(r => r === "player").length || 0;
+        const peasantRows = config.rowOwnership?.filter(r => r === "peasant").length || 0;
+        info += `<br>Crop: ${config.cropType}<br>Your rows: ${playerRows}<br>Peasant rows: ${peasantRows}`;
+      } else if (config.landType === "commons") {
+        const numSheep = sheepState[hillNum]?.length || 0;
+        info += `<br>Sheep: ${numSheep}`;
+      }
+
+      document.getElementById("popupTitle").textContent = `Hill ${hillNum}`;
+      document.getElementById("popupInfo").innerHTML = info;
+      document.getElementById("hillPopup").classList.add("show");
+      document.getElementById("popupOverlay").classList.add("show");
+    }
+
+    function closePopup() {
+      document.getElementById("hillPopup").classList.remove("show");
+      document.getElementById("popupOverlay").classList.remove("show");
+    }
+
+    // ---------- Animation loop ----------
+    function animate() {
+      // Update sheep positions
+      for (const key in sheepState) {
+        updateSheep(sheepState[key]);
+      }
+
+      // Update peasants
+      updatePeasants();
+
+      redrawHills();
+      requestAnimationFrame(animate);
+    }
+
+    // Pan functionality
+    const viewport = document.getElementById("viewport");
+    let isDown = false;
+    let startX = 0;
+    let scrollLeft = 0;
+    let hasMoved = false;
+
+    viewport.addEventListener("mousedown", (e) => {
+      isDown = true;
+      hasMoved = false;
+      startX = e.pageX - viewport.offsetLeft;
+      scrollLeft = viewport.scrollLeft;
+    });
+
+    viewport.addEventListener("mouseleave", () => { isDown = false; });
+    viewport.addEventListener("mouseup", () => { isDown = false; });
+
+    viewport.addEventListener("mousemove", (e) => {
+      if (!isDown) return;
+      e.preventDefault();
+      hasMoved = true;
+      const x = e.pageX - viewport.offsetLeft;
+      const walk = (x - startX) * 2;
+      viewport.scrollLeft = scrollLeft - walk;
+    });
+
+    // Click handler for hills - show popup with options
+    canvas.addEventListener("click", (e) => {
+      if (hasMoved) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const canvasX = (e.clientX - rect.left) * scaleX;
+      const canvasY = (e.clientY - rect.top) * scaleY;
+
+      const ids = Object.keys(hillConfigs).map(n=>parseInt(n,10));
+      ids.sort((a,b) => {
+        const pa = getHillTop(hillConfigs[a]);
+        const pb = getHillTop(hillConfigs[b]);
+        return pb - pa;
+      });
+
+      let hit = null;
+      for (const i of ids){
+        const path = new Path2D(generateHillPath(i, hillConfigs[i]));
+        if (ctx.isPointInPath(path, canvasX, canvasY)) { hit = i; break; }
+      }
+      if (!hit) return;
+
+      showHillPopup(hit);
+    });
+
+    // Show popup with hill options
+    function showHillPopup(hillNum) {
+      const config = hillConfigs[hillNum];
+      const popup = document.getElementById('hillPopup');
+      const overlay = document.getElementById('popupOverlay');
+      const title = document.getElementById('popupTitle');
+      const info = document.getElementById('popupInfo');
+
+      const houseCount = (game.houses[hillNum] || []).length;
+      
+      title.textContent = `Hill ${hillNum} - ${config.landType.toUpperCase()}`;
+      
+      let html = `<p>Houses: ${houseCount}/5</p>`;
+      
+      // Build options based on land type
+      if (houseCount < 5) {
+        html += `<button onclick="buildCottage(${hillNum})" style="margin:5px; padding:10px; background:#27ae60; color:white; border:none; cursor:pointer;">Build Peasant Cottage (£${game.houseCost})</button><br>`;
+      }
+      
+      if (config.landType === 'forest') {
+        html += `<button onclick="clearLand(${hillNum})" style="margin:5px; padding:10px; background:#e67e22; color:white; border:none; cursor:pointer;">Clear Land (£${game.clearCost})</button><br>`;
+      }
+      
+      if (config.landType === 'cleared') {
+        html += `<button onclick="buildFarm(${hillNum})" style="margin:5px; padding:10px; background:#3498db; color:white; border:none; cursor:pointer;">Build Farm (£${game.farmCost})</button><br>`;
+      }
+      
+      info.innerHTML = html;
+      popup.style.display = 'block';
+      overlay.style.display = 'block';
+    }
+
+    function closePopup() {
+      document.getElementById('hillPopup').style.display = 'none';
+      document.getElementById('popupOverlay').style.display = 'none';
+    }
+
+    function buildCottage(hillNum) {
+      if (!spend(game.houseCost)) return;
+      if (!game.houses[hillNum]) game.houses[hillNum] = [];
+      if (game.houses[hillNum].length >= 5) return;
+      
+      const house = makeHouseForHill(hillNum, hillConfigs[hillNum]);
+      if (house) {
+        game.houses[hillNum].push(house);
+        updatePeasantCount();
+      }
+      closePopup();
+    }
+
+    function clearLand(hillNum) {
+      if (!spend(game.clearCost)) return;
+      hillConfigs[hillNum].landType = 'cleared';
+      hillConfigs[hillNum].color = '#8B7355';
+      closePopup();
+    }
+
+    function buildFarm(hillNum) {
+      if (!spend(game.farmCost)) return;
+      hillConfigs[hillNum].landType = 'farm';
+      hillConfigs[hillNum].color = '#6B5D3F';
+      
+      // Initialize farm structures
+      const effectiveNumLines = Math.round(settings.numLines);
+      hillConfigs[hillNum].rowOwnership = initializeRowOwnership(effectiveNumLines);
+      hillConfigs[hillNum].rowCrops = {};
+      for (let i = 0; i < effectiveNumLines; i++) {
+        hillConfigs[hillNum].rowCrops[i] = [];
+      }
+      
+      closePopup();
+    }
+
+    // Initialize
+    window.addEventListener("load", () => {
+      // STARTING STATE: Add 3 starter cottages
+      const starterHills = [11, 12, 10]; // Farm hills
+      for (const hillNum of starterHills) {
+        if (!game.houses[hillNum]) game.houses[hillNum] = [];
+        const house = makeHouseForHill(hillNum, hillConfigs[hillNum]);
+        if (house) {
+          house.s = 14; // Bigger cottages
+          game.houses[hillNum].push(house);
+        }
+      }
+      
+      // Spawn 12 starting peasants (4 per cottage)
+      updatePeasantCount();
+      
+      // Pre-plant one row fully and one row halfway on hill 11
+      if (hillConfigs[11] && hillConfigs[11].rowCrops) {
+        // Row 0: Fully planted
+        for (let p = 0; p <= 100; p += 8) {
+          hillConfigs[11].rowCrops[0].push({position: p, stage: 'growing'});
+        }
+        // Row 1: Half planted
+        for (let p = 0; p <= 50; p += 8) {
+          hillConfigs[11].rowCrops[1].push({position: p, stage: 'seed'});
+        }
+      }
+      
+      setMoney(game.money);
+      setPeasantFood(game.peasantFood);
+      animate();
+      viewport.scrollLeft = (viewport.scrollWidth - viewport.clientWidth) / 2;
+    });
+  </script>
+
+</body>
+</html>
