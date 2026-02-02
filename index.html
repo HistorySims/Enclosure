@@ -157,7 +157,7 @@ const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25 };
 const TASKS = { IDLE: 'idle', WALKING_TO_FIELD: 'walking_to_field', PLANTING: 'planting', HARVESTING: 'harvesting', TENDING_COMMONS: 'tending_commons', WALKING_HOME: 'walking_home' };
 const CROP_STAGES = ['seed', 'growing', 'ready'];
 const CROP_GROWTH_TIME = 200;
-const CROP_ROT_TIME = 800;
+const CROP_ROT_TIME = 1500;
 const NODE_SPACING_PX = 40; // Fixed pixel spacing between crop nodes
 
 const game = { money: 50, food: 40, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [], turnipsUnlocked: false };
@@ -469,7 +469,7 @@ function addLogMessage(text) {
 }
 
 function drawSheep(x, y, scale, direction) {
-  const s = scale * 15;
+  const s = scale * 24;
   setInk(s * 0.10);
   const facing = -(direction || 1);
   ctx.beginPath();
@@ -679,9 +679,9 @@ function drawHouse(house) {
   ctx.restore();
 }
 
-function drawPeasant(peasant, isShepherd = false) {
+function drawPeasant(peasant, isShepherd = false, scale = 1) {
   const { x, y, direction } = peasant;
-  const s = 32;
+  const s = 32 * scale;
   ctx.save();
   if (direction === -1) {
     ctx.translate(x, y);
@@ -736,10 +736,18 @@ function createHouse(hillNum, config) {
   const spread = (config.end - config.start) * 0.6;
   const offsetX = (houses.length - 2) * (spread / 5);
   const s = 20 + depth * 5;
+  // Calculate hill surface y at house x position
+  const houseX = anchor.x + offsetX;
+  const { start, end } = config;
+  const width = end - start;
+  const mid = (start + end) / 2;
+  const hillTop = getHillTop(config);
+  const t = clamp01(Math.abs(houseX - mid) / (width / 2));
+  const surfaceY = hillTop + (GROUND_Y - hillTop) * Math.pow(t, 1.5);
   const bodyColors = ["#C0392B", "#FDFEFE", "#F5E6CA", "#C62828", "#ECEFF1"];
   const roofColors = ["#2B2B2E", "#3A2F2A", "#1F2A44", "#795548"];
   return {
-    hillNum, x: anchor.x + offsetX, y: anchor.y, s,
+    hillNum, x: houseX, y: surfaceY - s * 2.0, s,
     windows: 3 + Math.floor(Math.random() * 2),
     litCount: 0,
     color: bodyColors[Math.floor(Math.random() * bodyColors.length)],
@@ -989,7 +997,10 @@ function updatePeasants() {
     game.food -= foodNeeded;
     if (game.food < 0) {
       const deficit = Math.abs(game.food);
-      const toRemove = Math.min(game.peasants.length, Math.ceil(deficit / 2));
+      let houseCapacity = 0;
+      for (const hn in game.houses) houseCapacity += game.houses[hn].length * 2;
+      const minPeasants = houseCapacity > 0 ? Math.min(2, houseCapacity) : 0;
+      const toRemove = Math.min(Math.max(0, game.peasants.length - minPeasants), Math.ceil(deficit / 2));
       for (let i = 0; i < toRemove; i++) {
         game.peasants.pop();
         addLogMessage('A peasant has moved away \u2014 not enough food');
@@ -1271,10 +1282,20 @@ function render() {
     }
   }
 
-  // Draw peasants
+  // Draw peasants (scaled by hill depth)
   for (const peasant of game.peasants) {
-    if (isPointVisible(peasant.x, peasant.y, peasant.workHill || peasant.homeHill)) {
-      drawPeasant(peasant, peasant.isShepherd);
+    const pHillNum = peasant.workHill || peasant.homeHill;
+    if (isPointVisible(peasant.x, peasant.y, pHillNum)) {
+      const pConfig = hillConfigs[pHillNum];
+      if (pConfig) {
+        const pDepth = depthOfHill(pConfig);
+        const pHillHeight = GROUND_Y - getHillTop(pConfig);
+        const pHP = clamp01((GROUND_Y - peasant.y) / Math.max(1, pHillHeight));
+        const pScale = (1.05 - pHP * 0.35) * lerp(0.70, 1.35, pDepth);
+        drawPeasant(peasant, peasant.isShepherd, pScale);
+      } else {
+        drawPeasant(peasant, peasant.isShepherd);
+      }
     }
   }
 
