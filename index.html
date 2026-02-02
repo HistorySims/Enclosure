@@ -153,14 +153,14 @@
 <script>
 const CANVAS_WIDTH = 3000, CANVAS_HEIGHT = 800, GROUND_Y = 800;
 const SETTINGS = { numLines: 20, lineSpacing: 48, curveAmount: 20 };
-const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25 };
+const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25, machine: 40 };
 const TASKS = { IDLE: 'idle', WALKING_TO_FIELD: 'walking_to_field', PLANTING: 'planting', HARVESTING: 'harvesting', TENDING_COMMONS: 'tending_commons', WALKING_HOME: 'walking_home' };
 const CROP_STAGES = ['seed', 'growing', 'ready'];
 const CROP_GROWTH_TIME = 200;
 const CROP_ROT_TIME = 1500;
 const NODE_SPACING_PX = 40; // Fixed pixel spacing between crop nodes
 
-const game = { money: 50, food: 40, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [], turnipsUnlocked: false };
+const game = { money: 50, food: 40, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [], machines: [], turnipsUnlocked: false, mechanicsUnlocked: false };
 const sheepState = {};
 const floaters = [];
 let ctx;
@@ -727,6 +727,57 @@ function drawPeasant(peasant, isShepherd = false, scale = 1) {
   ctx.restore();
 }
 
+function drawMachine(machine, scale = 1) {
+  const { x, y, direction } = machine;
+  const s = 38 * scale;
+  ctx.save();
+  if (direction === -1) {
+    ctx.translate(x, y);
+    ctx.scale(-1, 1);
+    ctx.translate(-x, -y);
+  }
+  setInk(s * 0.08);
+  // Wooden frame body
+  ctx.beginPath();
+  ctx.rect(x - s * 0.55, y - s * 0.3, s * 1.1, s * 0.35);
+  fillAndInk("#8B6914");
+  // Wheels
+  ctx.beginPath();
+  ctx.arc(x - s * 0.35, y + s * 0.15, s * 0.22, 0, Math.PI * 2);
+  fillAndInk("#5D4037");
+  ctx.beginPath();
+  ctx.arc(x + s * 0.35, y + s * 0.15, s * 0.22, 0, Math.PI * 2);
+  fillAndInk("#5D4037");
+  // Wheel spokes
+  ctx.strokeStyle = "#8D6E63";
+  ctx.lineWidth = Math.max(1, s * 0.04);
+  for (const wx of [-0.35, 0.35]) {
+    for (let a = 0; a < 4; a++) {
+      const angle = a * Math.PI / 4;
+      ctx.beginPath();
+      ctx.moveTo(x + wx * s, y + s * 0.15);
+      ctx.lineTo(x + wx * s + Math.cos(angle) * s * 0.18, y + s * 0.15 + Math.sin(angle) * s * 0.18);
+      ctx.stroke();
+    }
+  }
+  // Blade/drill at front
+  setInk(s * 0.08);
+  ctx.beginPath();
+  ctx.moveTo(x + s * 0.55, y - s * 0.15);
+  ctx.lineTo(x + s * 0.75, y + s * 0.1);
+  ctx.lineTo(x + s * 0.55, y + s * 0.1);
+  ctx.closePath();
+  fillAndInk("#78909C");
+  // Handle shaft
+  ctx.strokeStyle = "#5D4037";
+  ctx.lineWidth = Math.max(2, s * 0.07);
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.45, y - s * 0.3);
+  ctx.lineTo(x - s * 0.6, y - s * 0.7);
+  ctx.stroke();
+  ctx.restore();
+}
+
 // House creation
 function createHouse(hillNum, config) {
   const houses = game.houses[hillNum] || [];
@@ -773,6 +824,23 @@ function createPeasant(houseHillNum, houseIdx) {
     direction: 1,
     workHill: null,
     isShepherd: false
+  };
+}
+
+function createMachine(hillNum) {
+  const config = hillConfigs[hillNum];
+  const anchor = getHillTopAnchor(hillNum, config);
+  return {
+    id: Date.now() + Math.random(),
+    homeHill: hillNum,
+    x: anchor.x, y: anchor.y + 20,
+    targetX: anchor.x, targetY: anchor.y + 20,
+    task: TASKS.IDLE,
+    taskData: {},
+    speed: 2.0,
+    idleTimer: 30,
+    direction: 1,
+    workHill: null
   };
 }
 
@@ -979,7 +1047,8 @@ function updatePeasants() {
   if (game.dayTimer >= game.dayLength) {
     game.dayTimer = 0;
     game.day++;
-    if (game.day === 50 && !game.turnipsUnlocked) showNewspaper();
+    if (game.day === 40 && !game.turnipsUnlocked) showNewspaper();
+    if (game.day === 80 && !game.mechanicsUnlocked) showMechanicsNewspaper();
     // Check fallow fields
     for (const fk in hillConfigs) {
       const fc = hillConfigs[fk];
@@ -1048,12 +1117,13 @@ function handlePeasantArrival(p) {
         if (node && node.crop && node.crop.stage === 'ready') {
           const config = hillConfigs[p.taskData.hillNum];
           const rowOwner = config.rowOwnership[p.taskData.rowIdx];
+          const yieldBonus = game.turnipsUnlocked ? 2 : 1;
           if (rowOwner === 'player') {
-            game.money += 1;
-            addFloater(node.x, node.y, '+£1', '#2E7D32');
+            game.money += yieldBonus;
+            addFloater(node.x, node.y, '+£' + yieldBonus, '#2E7D32');
           } else {
-            game.food += 2;
-            addFloater(node.x, node.y, '+2 food', '#E65100');
+            game.food += yieldBonus * 2;
+            addFloater(node.x, node.y, '+' + (yieldBonus * 2) + ' food', '#E65100');
           }
           config.soilHealth = Math.max(0, (config.soilHealth || 100) - 1);
           node.hasCrop = false;
@@ -1092,6 +1162,153 @@ function handlePeasantArrival(p) {
       p.idleTimer--;
       if (p.idleTimer <= 0) findWorkForPeasant(p);
       break;
+  }
+}
+
+// Machine AI
+function findWorkForMachine(machine) {
+  const farmTasks = [];
+  for (const key of VISIBLE_HILLS) {
+    const config = hillConfigs[key];
+    if (!config || config.landType !== 'farm' || !config.rowOwnership || config.isFallow) continue;
+
+    const plantTargets = [];
+    const harvestTargets = [];
+    let plantRowCount = 0;
+    let harvestRowCount = 0;
+
+    for (let rowIdx = 0; rowIdx < config.rowOwnership.length; rowIdx++) {
+      const nodes = getRowNodes(key, rowIdx);
+      const empty = nodes.filter(n => !n.hasCrop);
+      const ready = nodes.filter(n => n.crop && n.crop.stage === 'ready');
+
+      if (empty.length > 0 && plantRowCount < 5) {
+        for (const n of empty) plantTargets.push({ node: n, rowIdx });
+        plantRowCount++;
+      }
+      if (ready.length > 0 && harvestRowCount < 5) {
+        for (const n of ready) harvestTargets.push({ node: n, rowIdx });
+        harvestRowCount++;
+      }
+    }
+
+    if (harvestTargets.length > 0) farmTasks.push({ type: TASKS.HARVESTING, hillNum: key, targets: harvestTargets, weight: 5 });
+    if (plantTargets.length > 0) farmTasks.push({ type: TASKS.PLANTING, hillNum: key, targets: plantTargets, weight: 3 });
+  }
+
+  if (farmTasks.length === 0) { goMachineHome(machine); return; }
+
+  const totalWeight = farmTasks.reduce((sum, t) => sum + t.weight, 0);
+  let rand = Math.random() * totalWeight;
+  let chosen = farmTasks[0];
+  for (const task of farmTasks) {
+    rand -= task.weight;
+    if (rand <= 0) { chosen = task; break; }
+  }
+
+  machine.task = TASKS.WALKING_TO_FIELD;
+  machine.workHill = chosen.hillNum;
+  machine.taskData = {
+    hillNum: chosen.hillNum,
+    taskType: chosen.type,
+    nodeIndex: 0,
+    targets: chosen.targets
+  };
+  machine.targetX = chosen.targets[0].node.x;
+  machine.targetY = chosen.targets[0].node.y;
+}
+
+function goMachineHome(machine) {
+  machine.task = TASKS.WALKING_HOME;
+  machine.workHill = null;
+  const config = hillConfigs[machine.homeHill];
+  if (config) {
+    const anchor = getHillTopAnchor(machine.homeHill, config);
+    machine.targetX = anchor.x;
+    machine.targetY = anchor.y + 20;
+  }
+  machine.taskData = {};
+}
+
+function handleMachineArrival(m) {
+  switch (m.task) {
+    case TASKS.WALKING_TO_FIELD:
+      m.task = m.taskData.taskType;
+      break;
+
+    case TASKS.PLANTING:
+      if (m.taskData.targets) {
+        const target = m.taskData.targets[m.taskData.nodeIndex];
+        if (target && !target.node.hasCrop) {
+          target.node.hasCrop = true;
+          target.node.crop = { stage: 'seed', growthTimer: 0 };
+        }
+        m.taskData.nodeIndex++;
+        if (m.taskData.nodeIndex >= m.taskData.targets.length) {
+          findWorkForMachine(m);
+        } else {
+          const next = m.taskData.targets[m.taskData.nodeIndex];
+          m.targetX = next.node.x;
+          m.targetY = next.node.y;
+        }
+      }
+      break;
+
+    case TASKS.HARVESTING:
+      if (m.taskData.targets) {
+        const target = m.taskData.targets[m.taskData.nodeIndex];
+        if (target && target.node.crop && target.node.crop.stage === 'ready') {
+          const config = hillConfigs[m.taskData.hillNum];
+          const rowOwner = config.rowOwnership[target.rowIdx];
+          const yieldBonus = game.turnipsUnlocked ? 2 : 1;
+          if (rowOwner === 'player') {
+            game.money += yieldBonus;
+            addFloater(target.node.x, target.node.y, '+£' + yieldBonus, '#2E7D32');
+          } else {
+            game.food += yieldBonus * 2;
+            addFloater(target.node.x, target.node.y, '+' + (yieldBonus * 2) + ' food', '#E65100');
+          }
+          config.soilHealth = Math.max(0, (config.soilHealth || 100) - 1);
+          target.node.hasCrop = false;
+          target.node.crop = null;
+          updateUI();
+        }
+        m.taskData.nodeIndex++;
+        if (m.taskData.nodeIndex >= m.taskData.targets.length) {
+          findWorkForMachine(m);
+        } else {
+          const next = m.taskData.targets[m.taskData.nodeIndex];
+          m.targetX = next.node.x;
+          m.targetY = next.node.y;
+        }
+      }
+      break;
+
+    case TASKS.WALKING_HOME:
+      m.task = TASKS.IDLE;
+      m.idleTimer = 30 + Math.random() * 60;
+      break;
+
+    case TASKS.IDLE:
+      m.idleTimer--;
+      if (m.idleTimer <= 0) findWorkForMachine(m);
+      break;
+  }
+}
+
+function updateMachines() {
+  for (const m of game.machines) {
+    const dx = m.targetX - m.x;
+    const dy = m.targetY - m.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (Math.abs(dx) > 1) m.direction = dx > 0 ? 1 : -1;
+
+    if (dist < 8) {
+      handleMachineArrival(m);
+    } else {
+      m.x += (dx / dist) * m.speed;
+      m.y += (dy / dist) * m.speed;
+    }
   }
 }
 
@@ -1299,6 +1516,23 @@ function render() {
     }
   }
 
+  // Draw machines
+  for (const machine of game.machines) {
+    const mHillNum = machine.workHill || machine.homeHill;
+    if (isPointVisible(machine.x, machine.y, mHillNum)) {
+      const mConfig = hillConfigs[mHillNum];
+      if (mConfig) {
+        const mDepth = depthOfHill(mConfig);
+        const mHillHeight = GROUND_Y - getHillTop(mConfig);
+        const mHP = clamp01((GROUND_Y - machine.y) / Math.max(1, mHillHeight));
+        const mScale = (1.05 - mHP * 0.35) * lerp(0.70, 1.35, mDepth);
+        drawMachine(machine, mScale);
+      } else {
+        drawMachine(machine);
+      }
+    }
+  }
+
   // Draw floaters
   drawFloaters();
 }
@@ -1307,6 +1541,7 @@ function render() {
 function gameLoop() {
   for (const key in sheepState) updateSheep(sheepState[key]);
   updatePeasants();
+  updateMachines();
   updateCropGrowth();
   updateFloaters();
   render();
@@ -1361,6 +1596,11 @@ function showPopup(hillNum) {
       html += `<p style="font-size:11px;color:#c0392b;margin:2px 0 6px"><em>⚠ Warning: giving land to peasants is permanent and cannot be undone.</em></p>`;
     }
     html += `<p style="font-size:11px;color:#666;margin-top:8px"><em>Harvesting depletes soil. Switch crops or fallow to restore. Low soil = slow growth & fast rot.</em></p>`;
+    if (game.mechanicsUnlocked) {
+      const machineCount = game.machines.filter(m => m.homeHill === hillNum).length;
+      html += `<p style="margin-top:8px">\u2699 Machines on this farm: ${machineCount}</p>`;
+      html += `<button class="popup-btn build" onclick="buyMachine(${hillNum})">Buy Seed Drill (\u00a3${COSTS.machine})</button>`;
+    }
   }
   html += `<button class="popup-btn close" onclick="closePopup()">Close</button>`;
   info.innerHTML = html;
@@ -1420,6 +1660,14 @@ window.giveRowToPeasants = function(hillNum) {
   showPopup(hillNum);
 };
 
+window.buyMachine = function(hillNum) {
+  if (!spend(COSTS.machine)) return;
+  const machine = createMachine(hillNum);
+  game.machines.push(machine);
+  addLogMessage('Seed drill purchased!');
+  closePopup();
+};
+
 window.changeCrop = function(hillNum, newCrop) {
   const config = hillConfigs[hillNum];
   config.cropType = newCrop;
@@ -1477,12 +1725,33 @@ function showNewspaper() {
   title.textContent = '\ud83d\udcf0 THE VILLAGE GAZETTE';
   info.innerHTML = `
     <div style="text-align:left;border:2px solid #1c1410;padding:12px;margin:8px 0;font-family:Georgia,serif">
-      <p style="font-size:11px;color:#666;text-align:center">Day 50</p>
+      <p style="font-size:11px;color:#666;text-align:center">Day 40</p>
       <h3 style="text-align:center;border-bottom:2px solid #1c1410;padding-bottom:6px;margin-bottom:8px">AGRICULTURAL BREAKTHROUGH!</h3>
       <p style="font-size:13px;line-height:1.5">Local farmers have discovered the mighty <strong>turnip</strong>! This hardy root vegetable, when used in crop rotation, restores <strong>90%</strong> of depleted soil health &mdash; far superior to the mere 50% from switching between wheat and cabbage.</p>
+      <p style="font-size:13px;line-height:1.5;margin-top:8px">Additionally, improved farming techniques have <strong>doubled all crop yields</strong>!</p>
       <p style="font-size:13px;line-height:1.5;margin-top:8px">Scholars advise rotating between all three crops for maximum soil vitality.</p>
     </div>
     <button class="popup-btn build" onclick="closePopup()">Splendid!</button>
+  `;
+  popup.classList.add('show');
+  overlay.classList.add('show');
+}
+
+function showMechanicsNewspaper() {
+  game.mechanicsUnlocked = true;
+  const popup = document.getElementById('hillPopup');
+  const overlay = document.getElementById('popupOverlay');
+  const title = document.getElementById('popupTitle');
+  const info = document.getElementById('popupInfo');
+  title.textContent = '\ud83d\udcf0 THE VILLAGE GAZETTE';
+  info.innerHTML = `
+    <div style="text-align:left;border:2px solid #1c1410;padding:12px;margin:8px 0;font-family:Georgia,serif">
+      <p style="font-size:11px;color:#666;text-align:center">Day 80</p>
+      <h3 style="text-align:center;border-bottom:2px solid #1c1410;padding-bottom:6px;margin-bottom:8px">MECHANICAL REVOLUTION!</h3>
+      <p style="font-size:13px;line-height:1.5">Ingenious craftsmen have perfected the <strong>seed drill</strong> and <strong>mechanical reaper</strong>! These marvellous machines can plant and harvest <strong>five rows at once</strong>, working faster than any peasant.</p>
+      <p style="font-size:13px;line-height:1.5;margin-top:8px">Machines may be purchased for <strong>\u00a340</strong> on any farm hill.</p>
+    </div>
+    <button class="popup-btn build" onclick="closePopup()">Remarkable!</button>
   `;
   popup.classList.add('show');
   overlay.classList.add('show');
