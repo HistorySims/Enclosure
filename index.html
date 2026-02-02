@@ -1337,7 +1337,10 @@ function showPopup(hillNum) {
   if (config.landType === 'farm') {
     const health = config.soilHealth !== undefined ? config.soilHealth : 100;
     const healthColor = health > 60 ? '#4CAF50' : health > 30 ? '#FF9800' : '#F44336';
+    const playerRows = (config.rowOwnership || []).filter(r => r === 'player').length;
+    const peasantRows = (config.rowOwnership || []).filter(r => r === 'peasant').length;
     html += `<p style="margin-top:10px">🌱 Crop: <strong>${config.cropType || 'wheat'}</strong></p>`;
+    html += `<p style="margin:6px 0"><strong>Your rows:</strong> ${playerRows} &nbsp;|&nbsp; <strong>Peasant rows:</strong> ${peasantRows}</p>`;
     html += `<p>Soil Health: <span style="color:${healthColor};font-weight:bold">${Math.round(health)}%</span></p>`;
     html += `<div style="background:#ddd;border-radius:4px;height:8px;margin:4px 0 8px"><div style="background:${healthColor};height:100%;width:${health}%;border-radius:4px"></div></div>`;
     if (config.isFallow) {
@@ -1352,6 +1355,10 @@ function showPopup(hillNum) {
         html += `<button class="popup-btn farm" onclick="changeCrop(${hillNum},'${crop}')">Switch to ${crop} (+${restoreLabel} soil)</button>`;
       }
       html += `<button class="popup-btn clear" onclick="setFallow(${hillNum})">Set Fallow (restores soil in 10 days)</button>`;
+    }
+    if (playerRows > 0) {
+      html += `<button class="popup-btn clear" onclick="giveRowToPeasants(${hillNum})" style="margin-top:6px">Give a Row to Peasants</button>`;
+      html += `<p style="font-size:11px;color:#c0392b;margin:2px 0 6px"><em>⚠ Warning: giving land to peasants is permanent and cannot be undone.</em></p>`;
     }
     html += `<p style="font-size:11px;color:#666;margin-top:8px"><em>Harvesting depletes soil. Switch crops or fallow to restore. Low soil = slow growth & fast rot.</em></p>`;
   }
@@ -1401,6 +1408,16 @@ window.buildCommons = function(hillNum) {
   hillConfigs[hillNum].color = '#7CB342';
   sheepState[hillNum] = initializeSheep(hillNum, hillConfigs[hillNum]);
   closePopup();
+};
+
+window.giveRowToPeasants = function(hillNum) {
+  const config = hillConfigs[hillNum];
+  if (!config.rowOwnership) return;
+  const idx = config.rowOwnership.indexOf('player');
+  if (idx === -1) return;
+  config.rowOwnership[idx] = 'peasant';
+  addLogMessage('You gave a row of land to the peasants');
+  showPopup(hillNum);
 };
 
 window.changeCrop = function(hillNum, newCrop) {
