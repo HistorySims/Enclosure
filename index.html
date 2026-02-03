@@ -954,7 +954,7 @@ function findWorkForPeasant(peasant) {
           tasks.push({ type: TASKS.PLANTING, hillNum: key, rowIdx, weight: 3 });
         }
         if (readyNodes.length > 0) {
-          tasks.push({ type: TASKS.HARVESTING, hillNum: key, rowIdx, weight: 5 });
+          tasks.push({ type: TASKS.HARVESTING, hillNum: key, rowIdx, weight: 8 });
         }
       }
     } else if (config.landType === 'commons') {
@@ -1077,6 +1077,38 @@ function updatePeasants() {
       }
       game.food = 0;
     }
+    // Peasant repopulation — one per day if food is positive and houses have vacancies
+    if (game.food > 0) {
+      let houseCapacity = 0;
+      for (const hn in game.houses) houseCapacity += game.houses[hn].length * 2;
+      if (game.peasants.length < houseCapacity) {
+        let added = false;
+        for (const hn in game.houses) {
+          if (added) break;
+          const houses = game.houses[hn];
+          for (let hIdx = 0; hIdx < houses.length; hIdx++) {
+            const count = game.peasants.filter(p => p.homeHill === parseInt(hn) && p.houseIdx === hIdx).length;
+            if (count < 2) {
+              const peasant = createPeasant(parseInt(hn), hIdx);
+              if (peasant) {
+                game.peasants.push(peasant);
+                addLogMessage('A peasant has moved into a vacant cottage');
+                added = true;
+              }
+              break;
+            }
+          }
+        }
+        // Update lit windows
+        for (const hn in game.houses) {
+          const houses = game.houses[hn];
+          for (let hIdx = 0; hIdx < houses.length; hIdx++) {
+            const count = game.peasants.filter(p => p.homeHill === parseInt(hn) && p.houseIdx === hIdx).length;
+            houses[hIdx].litCount = Math.min(houses[hIdx].windows, Math.ceil(count / 1.5));
+          }
+        }
+      }
+    }
     updateUI();
   }
 }
@@ -1193,7 +1225,7 @@ function findWorkForMachine(machine) {
       }
     }
 
-    if (harvestTargets.length > 0) farmTasks.push({ type: TASKS.HARVESTING, hillNum: key, targets: harvestTargets, weight: 5 });
+    if (harvestTargets.length > 0) farmTasks.push({ type: TASKS.HARVESTING, hillNum: key, targets: harvestTargets, weight: 8 });
     if (plantTargets.length > 0) farmTasks.push({ type: TASKS.PLANTING, hillNum: key, targets: plantTargets, weight: 3 });
   }
 
