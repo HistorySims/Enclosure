@@ -152,7 +152,7 @@
 
 <script>
 const CANVAS_WIDTH = 3000, CANVAS_HEIGHT = 800, GROUND_Y = 800;
-const SETTINGS = { numLines: 45, lineSpacing: 48, curveAmount: 20 };
+const SETTINGS = { numLines: 20, lineSpacing: 48, curveAmount: 20 };
 const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25, machine: 40, encloseField: 25, demolishHouse: 10 };
 const TASKS = { IDLE: 'idle', WALKING_TO_FIELD: 'walking_to_field', PLANTING: 'planting', HARVESTING: 'harvesting', TENDING_COMMONS: 'tending_commons', WALKING_HOME: 'walking_home' };
 const CROP_STAGES = ['seed', 'growing', 'ready'];
@@ -1637,12 +1637,26 @@ function render() {
 }
 
 // Game loop
-function gameLoop() {
-  for (const key in sheepState) updateSheep(sheepState[key]);
-  updatePeasants();
-  updateMachines();
-  updateCropGrowth();
-  updateFloaters();
+let lastFrameTime = 0;
+let tickAccum = 0;
+const TICK_MS = 1000 / 60;
+
+function gameLoop(timestamp) {
+  if (lastFrameTime === 0) lastFrameTime = timestamp;
+  let elapsed = timestamp - lastFrameTime;
+  lastFrameTime = timestamp;
+  if (elapsed > 200) elapsed = 200;
+
+  tickAccum += elapsed;
+  while (tickAccum >= TICK_MS) {
+    for (const key in sheepState) updateSheep(sheepState[key]);
+    updatePeasants();
+    updateMachines();
+    updateCropGrowth();
+    updateFloaters();
+    tickAccum -= TICK_MS;
+  }
+
   render();
   requestAnimationFrame(gameLoop);
 }
@@ -2012,7 +2026,7 @@ function init() {
   const viewport = document.getElementById('viewport');
   viewport.scrollLeft = (viewport.scrollWidth - viewport.clientWidth) / 2;
 
-  gameLoop();
+  requestAnimationFrame(gameLoop);
 }
 
 window.addEventListener('load', init);
