@@ -1179,8 +1179,8 @@ function handlePeasantArrival(p) {
     case TASKS.TENDING_COMMONS:
       p.idleTimer--;
       if (p.idleTimer <= 0) {
-        game.food += 2;
-        addFloater(p.x, p.y, '+2 food', '#E65100');
+        game.food += 8;
+        addFloater(p.x, p.y, '+8 food', '#E65100');
         updateUI();
         findWorkForPeasant(p);
       }
