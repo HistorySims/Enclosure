@@ -152,7 +152,7 @@
 
 <script>
 const CANVAS_WIDTH = 3000, CANVAS_HEIGHT = 800, GROUND_Y = 800;
-const SETTINGS = { numLines: 20, lineSpacing: 48, curveAmount: 20 };
+const SETTINGS = { numLines: 45, lineSpacing: 48, curveAmount: 20 };
 const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25, machine: 40, encloseField: 25, demolishHouse: 10 };
 const TASKS = { IDLE: 'idle', WALKING_TO_FIELD: 'walking_to_field', PLANTING: 'planting', HARVESTING: 'harvesting', TENDING_COMMONS: 'tending_commons', WALKING_HOME: 'walking_home' };
 const CROP_STAGES = ['seed', 'growing', 'ready'];
@@ -160,7 +160,7 @@ const CROP_GROWTH_TIME = 200;
 const CROP_ROT_TIME = 3000;
 const NODE_SPACING_PX = 40; // Fixed pixel spacing between crop nodes
 
-const game = { money: 50, food: 40, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [], machines: [], turnipsUnlocked: false, mechanicsUnlocked: false, enclosureUnlocked: false };
+const game = { money: 50, food: 100, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [], machines: [], turnipsUnlocked: false, mechanicsUnlocked: false, enclosureUnlocked: false };
 const sheepState = {};
 const floaters = [];
 let ctx;
@@ -1037,8 +1037,26 @@ function updatePeasants() {
     if (dist < 8) {
       handlePeasantArrival(p);
     } else {
-      p.x += (dx / dist) * p.speed;
-      p.y += (dy / dist) * p.speed;
+      let moveX = (dx / dist) * p.speed;
+      let moveY = (dy / dist) * p.speed;
+
+      // Avoid enclosed hills
+      for (const key in hillConfigs) {
+        const eConfig = hillConfigs[key];
+        if (!eConfig.enclosed) continue;
+        const eNum = parseInt(key);
+        if (eNum === p.workHill || eNum === p.homeHill) continue;
+        const ePath = ALL_HILL_PATHS[key];
+        if (ePath && ctx.isPointInPath(ePath, p.x + moveX, p.y + moveY)) {
+          const goRight = p.targetX > p.x;
+          moveX = (goRight ? 1 : -1) * p.speed;
+          moveY = 0.5;
+          break;
+        }
+      }
+
+      p.x += moveX;
+      p.y += moveY;
     }
   }
   
@@ -1117,7 +1135,9 @@ function handlePeasantArrival(p) {
   switch (p.task) {
     case TASKS.WALKING_TO_FIELD:
       p.task = p.taskData.taskType;
-      if (!p.taskData.nodes) {
+      if (p.task === TASKS.TENDING_COMMONS) {
+        p.idleTimer = 120;
+      } else if (!p.taskData.nodes) {
         p.idleTimer = 120 + Math.random() * 180;
       }
       break;
@@ -1968,6 +1988,13 @@ function init() {
     const config = hillConfigs[key];
     if (config.landType === 'farm') initializeFarmHill(config);
     if (config.landType === 'commons') sheepState[key] = initializeSheep(parseInt(key), config);
+  }
+
+  // Pre-plant first row of hill 11 at ready stage
+  const starterNodes = getRowNodes(11, 0);
+  for (const node of starterNodes) {
+    node.hasCrop = true;
+    node.crop = { stage: 'ready', growthTimer: 0, rotTimer: 0 };
   }
 
   // Starter houses
