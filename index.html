@@ -152,7 +152,7 @@
 
 <script>
 const CANVAS_WIDTH = 3000, CANVAS_HEIGHT = 800, GROUND_Y = 800;
-const SETTINGS = { numLines: 20, lineSpacing: 48, curveAmount: 20 };
+const SETTINGS = { numLines: 20, lineSpacing: 48, curveAmount: 20, rowsPerPx: 0.015 };
 const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25, machine: 40, encloseField: 25, demolishHouse: 10 };
 const TASKS = { IDLE: 'idle', WALKING_TO_FIELD: 'walking_to_field', PLANTING: 'planting', HARVESTING: 'harvesting', TENDING_COMMONS: 'tending_commons', WALKING_HOME: 'walking_home' };
 const CROP_STAGES = ['seed', 'growing', 'ready'];
@@ -193,6 +193,7 @@ const hillConfigs = {
 };
 
 function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+function getNumRows(config) { return Math.max(SETTINGS.numLines, Math.round((config.end - config.start) * SETTINGS.rowsPerPx)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function hash2(x, y) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123; return s - Math.floor(s); }
 
@@ -881,7 +882,7 @@ function generateRowNodes(hillNum, rowIdx) {
   const hillHeight = GROUND_Y - hillTop;
   const depth = depthOfHill(config);
   const spacingMult = lerp(0.65, 1.45, depth);
-  const effectiveNumLines = Math.round(clamp01(lerp(0.95, 1.10, 1 - depth)) * SETTINGS.numLines);
+  const effectiveNumLines = Math.round(clamp01(lerp(0.95, 1.10, 1 - depth)) * getNumRows(config));
   const effectiveSpacing = SETTINGS.lineSpacing * spacingMult;
   const slope = (hillNum % 2 === 0) ? 1 : -1;
   const offset = (rowIdx - effectiveNumLines / 2) * effectiveSpacing;
@@ -1434,7 +1435,7 @@ function updateCropGrowth() {
 
 // Farm initialization
 function initializeFarmHill(config) {
-  const effectiveNumLines = Math.round(SETTINGS.numLines);
+  const effectiveNumLines = getNumRows(config);
   config.rowOwnership = [];
   config.rowNodes = null;
   if (config.soilHealth === undefined) config.soilHealth = 100;
@@ -1456,7 +1457,7 @@ function drawFarmContent(hillNum, config) {
   const depth = depthOfHill(config);
   const spacingMult = lerp(0.65, 1.45, depth);
   const cropSizeMult = lerp(0.70, 1.35, depth);
-  const effectiveNumLines = Math.round(clamp01(lerp(0.95, 1.10, 1 - depth)) * SETTINGS.numLines);
+  const effectiveNumLines = Math.round(clamp01(lerp(0.95, 1.10, 1 - depth)) * getNumRows(config));
   const effectiveSpacing = SETTINGS.lineSpacing * spacingMult;
   const slope = (hillNum % 2 === 0) ? 1 : -1;
   const hillPath = ALL_HILL_PATHS[hillNum];
