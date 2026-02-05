@@ -943,7 +943,7 @@ function getRowNodes(hillNum, rowIdx) {
 
 function findWorkForPeasant(peasant) {
   const tasks = [];
-  const desperate = game.peasants.length <= 2;
+  const desperate = game.peasants.length < 6;
   for (const key of VISIBLE_HILLS) {
     const config = hillConfigs[key];
     if (!config) continue;
@@ -1202,8 +1202,8 @@ function handlePeasantArrival(p) {
     case TASKS.TENDING_COMMONS:
       p.idleTimer--;
       if (p.idleTimer <= 0) {
-        game.food += 8;
-        addFloater(p.x, p.y, '+8 food', '#E65100');
+        game.food += 12;
+        addFloater(p.x, p.y, '+12 food', '#E65100');
         updateUI();
         findWorkForPeasant(p);
       }
