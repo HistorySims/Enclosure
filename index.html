@@ -194,6 +194,7 @@ const hillConfigs = {
 
 function clamp01(v) { return Math.max(0, Math.min(1, v)); }
 function getNumRows(config) { return Math.max(SETTINGS.numLines, Math.round((config.end - config.start) * SETTINGS.rowsPerPx)); }
+function getYieldBonus() { return Math.min(4, 1 + Math.floor(game.day / 20)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function hash2(x, y) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123; return s - Math.floor(s); }
 
@@ -1172,7 +1173,7 @@ function handlePeasantArrival(p) {
         if (node && node.crop && node.crop.stage === 'ready') {
           const config = hillConfigs[p.taskData.hillNum];
           const rowOwner = config.rowOwnership[p.taskData.rowIdx];
-          const yieldBonus = game.turnipsUnlocked ? 2 : 1;
+          const yieldBonus = getYieldBonus();
           if (rowOwner === 'player') {
             game.money += yieldBonus;
             addFloater(node.x, node.y, '+£' + yieldBonus, '#2E7D32');
@@ -1315,7 +1316,7 @@ function handleMachineArrival(m) {
         if (target && target.node.crop && target.node.crop.stage === 'ready') {
           const config = hillConfigs[m.taskData.hillNum];
           const rowOwner = config.rowOwnership[target.rowIdx];
-          const yieldBonus = game.turnipsUnlocked ? 2 : 1;
+          const yieldBonus = getYieldBonus();
           if (rowOwner === 'player') {
             game.money += yieldBonus;
             addFloater(target.node.x, target.node.y, '+£' + yieldBonus, '#2E7D32');
