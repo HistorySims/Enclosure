@@ -731,51 +731,75 @@ function drawPeasant(peasant, isShepherd = false, scale = 1) {
 
 function drawMachine(machine, scale = 1) {
   const { x, y, direction } = machine;
-  const s = 38 * scale;
+  const s = 42 * scale;
   ctx.save();
   if (direction === -1) {
     ctx.translate(x, y);
     ctx.scale(-1, 1);
     ctx.translate(-x, -y);
   }
-  setInk(s * 0.08);
-  // Wooden frame body
+  setInk(s * 0.07);
+  // Wheels (large, on sides)
   ctx.beginPath();
-  ctx.rect(x - s * 0.55, y - s * 0.3, s * 1.1, s * 0.35);
-  fillAndInk("#8B6914");
-  // Wheels
-  ctx.beginPath();
-  ctx.arc(x - s * 0.35, y + s * 0.15, s * 0.22, 0, Math.PI * 2);
+  ctx.arc(x - s * 0.5, y + s * 0.1, s * 0.28, 0, Math.PI * 2);
   fillAndInk("#5D4037");
   ctx.beginPath();
-  ctx.arc(x + s * 0.35, y + s * 0.15, s * 0.22, 0, Math.PI * 2);
+  ctx.arc(x + s * 0.5, y + s * 0.1, s * 0.28, 0, Math.PI * 2);
   fillAndInk("#5D4037");
   // Wheel spokes
   ctx.strokeStyle = "#8D6E63";
-  ctx.lineWidth = Math.max(1, s * 0.04);
-  for (const wx of [-0.35, 0.35]) {
+  ctx.lineWidth = Math.max(1, s * 0.035);
+  for (const wx of [-0.5, 0.5]) {
     for (let a = 0; a < 4; a++) {
       const angle = a * Math.PI / 4;
       ctx.beginPath();
-      ctx.moveTo(x + wx * s, y + s * 0.15);
-      ctx.lineTo(x + wx * s + Math.cos(angle) * s * 0.18, y + s * 0.15 + Math.sin(angle) * s * 0.18);
+      ctx.moveTo(x + wx * s, y + s * 0.1);
+      ctx.lineTo(x + wx * s + Math.cos(angle) * s * 0.22, y + s * 0.1 + Math.sin(angle) * s * 0.22);
       ctx.stroke();
     }
   }
-  // Blade/drill at front
-  setInk(s * 0.08);
+  // Axle bar
+  setInk(s * 0.06);
   ctx.beginPath();
-  ctx.moveTo(x + s * 0.55, y - s * 0.15);
-  ctx.lineTo(x + s * 0.75, y + s * 0.1);
-  ctx.lineTo(x + s * 0.55, y + s * 0.1);
+  ctx.rect(x - s * 0.55, y - s * 0.05, s * 1.1, s * 0.12);
+  fillAndInk("#6D4C41");
+  // Seed hopper (trapezoidal box)
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.35, y - s * 0.05);
+  ctx.lineTo(x - s * 0.28, y - s * 0.45);
+  ctx.lineTo(x + s * 0.28, y - s * 0.45);
+  ctx.lineTo(x + s * 0.35, y - s * 0.05);
   ctx.closePath();
-  fillAndInk("#78909C");
-  // Handle shaft
-  ctx.strokeStyle = "#5D4037";
-  ctx.lineWidth = Math.max(2, s * 0.07);
+  fillAndInk("#8B7355");
+  // Hopper top rim
   ctx.beginPath();
-  ctx.moveTo(x - s * 0.45, y - s * 0.3);
-  ctx.lineTo(x - s * 0.6, y - s * 0.7);
+  ctx.rect(x - s * 0.30, y - s * 0.50, s * 0.60, s * 0.08);
+  fillAndInk("#6D4C41");
+  // Three coulter tubes
+  ctx.strokeStyle = "#555";
+  ctx.lineWidth = Math.max(2, s * 0.05);
+  for (const offset of [-0.18, 0, 0.18]) {
+    ctx.beginPath();
+    ctx.moveTo(x + offset * s, y - s * 0.05);
+    ctx.lineTo(x + offset * s, y + s * 0.35);
+    ctx.stroke();
+    // Coulter blade at bottom
+    setInk(s * 0.05);
+    ctx.beginPath();
+    ctx.moveTo(x + offset * s - s * 0.04, y + s * 0.30);
+    ctx.lineTo(x + offset * s, y + s * 0.42);
+    ctx.lineTo(x + offset * s + s * 0.04, y + s * 0.30);
+    ctx.closePath();
+    fillAndInk("#78909C");
+  }
+  // Handle shafts
+  ctx.strokeStyle = "#5D4037";
+  ctx.lineWidth = Math.max(2, s * 0.06);
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.35, y - s * 0.35);
+  ctx.lineTo(x - s * 0.55, y - s * 0.75);
+  ctx.moveTo(x + s * 0.35, y - s * 0.35);
+  ctx.lineTo(x + s * 0.55, y - s * 0.75);
   ctx.stroke();
   ctx.restore();
 }
@@ -957,7 +981,7 @@ function findWorkForPeasant(peasant) {
           tasks.push({ type: TASKS.PLANTING, hillNum: key, rowIdx, weight: desperate ? 1 : 3 });
         }
         if (readyNodes.length > 0) {
-          tasks.push({ type: TASKS.HARVESTING, hillNum: key, rowIdx, weight: desperate ? 50 : 8 });
+          tasks.push({ type: TASKS.HARVESTING, hillNum: key, rowIdx, weight: desperate ? 50 : 12 });
         }
       }
     } else if (config.landType === 'commons') {
@@ -1238,17 +1262,17 @@ function findWorkForMachine(machine) {
       const empty = nodes.filter(n => !n.hasCrop);
       const ready = nodes.filter(n => n.crop && n.crop.stage === 'ready');
 
-      if (empty.length > 0 && plantRowCount < 5) {
+      if (empty.length > 0 && plantRowCount < 3) {
         for (const n of empty) plantTargets.push({ node: n, rowIdx });
         plantRowCount++;
       }
-      if (ready.length > 0 && harvestRowCount < 5) {
+      if (ready.length > 0 && harvestRowCount < 3) {
         for (const n of ready) harvestTargets.push({ node: n, rowIdx });
         harvestRowCount++;
       }
     }
 
-    if (harvestTargets.length > 0) farmTasks.push({ type: TASKS.HARVESTING, hillNum: key, targets: harvestTargets, weight: 8 });
+    if (harvestTargets.length > 0) farmTasks.push({ type: TASKS.HARVESTING, hillNum: key, targets: harvestTargets, weight: 12 });
     if (plantTargets.length > 0) farmTasks.push({ type: TASKS.PLANTING, hillNum: key, targets: plantTargets, weight: 3 });
   }
 
@@ -1916,7 +1940,7 @@ function showMechanicsNewspaper() {
     <div style="text-align:left;border:2px solid #1c1410;padding:12px;margin:8px 0;font-family:Georgia,serif">
       <p style="font-size:11px;color:#666;text-align:center">Day 80</p>
       <h3 style="text-align:center;border-bottom:2px solid #1c1410;padding-bottom:6px;margin-bottom:8px">MECHANICAL REVOLUTION!</h3>
-      <p style="font-size:13px;line-height:1.5">Ingenious craftsmen have perfected the <strong>seed drill</strong> and <strong>mechanical reaper</strong>! These marvellous machines can plant and harvest <strong>five rows at once</strong>, working faster than any peasant.</p>
+      <p style="font-size:13px;line-height:1.5">Ingenious craftsmen have perfected the <strong>seed drill</strong> and <strong>mechanical reaper</strong>! These marvellous machines can plant and harvest <strong>three rows at once</strong>, working faster than any peasant.</p>
       <p style="font-size:13px;line-height:1.5;margin-top:8px">Machines may be purchased for <strong>\u00a340</strong> on any farm hill.</p>
     </div>
     <button class="popup-btn build" onclick="closePopup()">Remarkable!</button>
