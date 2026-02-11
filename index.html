@@ -1252,8 +1252,9 @@ function findWorkForMachine(machine) {
     const config = hillConfigs[key];
     if (!config || config.landType !== 'farm' || !config.rowOwnership || config.isFallow) continue;
 
-    const plantTargets = [];
-    const harvestTargets = [];
+    // Collect nodes from 3 adjacent rows grouped by column (X position)
+    const plantColumns = {};
+    const harvestColumns = {};
     let plantRowCount = 0;
     let harvestRowCount = 0;
 
@@ -1263,17 +1264,29 @@ function findWorkForMachine(machine) {
       const ready = nodes.filter(n => n.crop && n.crop.stage === 'ready');
 
       if (empty.length > 0 && plantRowCount < 3) {
-        for (const n of empty) plantTargets.push({ node: n, rowIdx });
+        for (const n of empty) {
+          const colKey = Math.round(n.x);
+          if (!plantColumns[colKey]) plantColumns[colKey] = { x: n.x, y: n.y, nodes: [] };
+          plantColumns[colKey].nodes.push({ node: n, rowIdx });
+        }
         plantRowCount++;
       }
       if (ready.length > 0 && harvestRowCount < 3) {
-        for (const n of ready) harvestTargets.push({ node: n, rowIdx });
+        for (const n of ready) {
+          const colKey = Math.round(n.x);
+          if (!harvestColumns[colKey]) harvestColumns[colKey] = { x: n.x, y: n.y, nodes: [] };
+          harvestColumns[colKey].nodes.push({ node: n, rowIdx });
+        }
         harvestRowCount++;
       }
     }
 
-    if (harvestTargets.length > 0) farmTasks.push({ type: TASKS.HARVESTING, hillNum: key, targets: harvestTargets, weight: 12 });
-    if (plantTargets.length > 0) farmTasks.push({ type: TASKS.PLANTING, hillNum: key, targets: plantTargets, weight: 3 });
+    // Convert columns to sorted arrays (by X position)
+    const plantTargets = Object.values(plantColumns).sort((a, b) => a.x - b.x);
+    const harvestTargets = Object.values(harvestColumns).sort((a, b) => a.x - b.x);
+
+    if (harvestTargets.length > 0) farmTasks.push({ type: TASKS.HARVESTING, hillNum: key, columns: harvestTargets, weight: 12 });
+    if (plantTargets.length > 0) farmTasks.push({ type: TASKS.PLANTING, hillNum: key, columns: plantTargets, weight: 3 });
   }
 
   if (farmTasks.length === 0) { goMachineHome(machine); return; }
@@ -1291,11 +1304,11 @@ function findWorkForMachine(machine) {
   machine.taskData = {
     hillNum: chosen.hillNum,
     taskType: chosen.type,
-    nodeIndex: 0,
-    targets: chosen.targets
+    columnIndex: 0,
+    columns: chosen.columns
   };
-  machine.targetX = chosen.targets[0].node.x;
-  machine.targetY = chosen.targets[0].node.y;
+  machine.targetX = chosen.columns[0].x;
+  machine.targetY = chosen.columns[0].y;
 }
 
 function goMachineHome(machine) {
@@ -1317,49 +1330,59 @@ function handleMachineArrival(m) {
       break;
 
     case TASKS.PLANTING:
-      if (m.taskData.targets) {
-        const target = m.taskData.targets[m.taskData.nodeIndex];
-        if (target && !target.node.hasCrop) {
-          target.node.hasCrop = true;
-          target.node.crop = { stage: 'seed', growthTimer: 0 };
+      if (m.taskData.columns) {
+        const column = m.taskData.columns[m.taskData.columnIndex];
+        if (column) {
+          // Plant all nodes in this column (up to 3 rows) at once
+          for (const target of column.nodes) {
+            if (!target.node.hasCrop) {
+              target.node.hasCrop = true;
+              target.node.crop = { stage: 'seed', growthTimer: 0 };
+            }
+          }
         }
-        m.taskData.nodeIndex++;
-        if (m.taskData.nodeIndex >= m.taskData.targets.length) {
+        m.taskData.columnIndex++;
+        if (m.taskData.columnIndex >= m.taskData.columns.length) {
           findWorkForMachine(m);
         } else {
-          const next = m.taskData.targets[m.taskData.nodeIndex];
-          m.targetX = next.node.x;
-          m.targetY = next.node.y;
+          const next = m.taskData.columns[m.taskData.columnIndex];
+          m.targetX = next.x;
+          m.targetY = next.y;
         }
       }
       break;
 
     case TASKS.HARVESTING:
-      if (m.taskData.targets) {
-        const target = m.taskData.targets[m.taskData.nodeIndex];
-        if (target && target.node.crop && target.node.crop.stage === 'ready') {
+      if (m.taskData.columns) {
+        const column = m.taskData.columns[m.taskData.columnIndex];
+        if (column) {
           const config = hillConfigs[m.taskData.hillNum];
-          const rowOwner = config.rowOwnership[target.rowIdx];
           const yieldBonus = getYieldBonus();
-          if (rowOwner === 'player') {
-            game.money += yieldBonus;
-            addFloater(target.node.x, target.node.y, '+£' + yieldBonus, '#2E7D32');
-          } else {
-            game.food += yieldBonus * 2;
-            addFloater(target.node.x, target.node.y, '+' + (yieldBonus * 2) + ' food', '#E65100');
+          // Harvest all nodes in this column (up to 3 rows) at once
+          for (const target of column.nodes) {
+            if (target.node.crop && target.node.crop.stage === 'ready') {
+              const rowOwner = config.rowOwnership[target.rowIdx];
+              if (rowOwner === 'player') {
+                game.money += yieldBonus;
+                addFloater(target.node.x, target.node.y, '+£' + yieldBonus, '#2E7D32');
+              } else {
+                game.food += yieldBonus * 2;
+                addFloater(target.node.x, target.node.y, '+' + (yieldBonus * 2) + ' food', '#E65100');
+              }
+              config.soilHealth = Math.max(0, (config.soilHealth || 100) - 1);
+              target.node.hasCrop = false;
+              target.node.crop = null;
+            }
           }
-          config.soilHealth = Math.max(0, (config.soilHealth || 100) - 1);
-          target.node.hasCrop = false;
-          target.node.crop = null;
           updateUI();
         }
-        m.taskData.nodeIndex++;
-        if (m.taskData.nodeIndex >= m.taskData.targets.length) {
+        m.taskData.columnIndex++;
+        if (m.taskData.columnIndex >= m.taskData.columns.length) {
           findWorkForMachine(m);
         } else {
-          const next = m.taskData.targets[m.taskData.nodeIndex];
-          m.targetX = next.node.x;
-          m.targetY = next.node.y;
+          const next = m.taskData.columns[m.taskData.columnIndex];
+          m.targetX = next.x;
+          m.targetY = next.y;
         }
       }
       break;
@@ -1538,38 +1561,56 @@ function drawFence(hillNum, config) {
   const postH = 14 * scaleMult;
   const postW = Math.max(1, 2.5 * scaleMult);
 
-  const posts = [];
+  // Bottom fence posts
+  const bottomPosts = [];
   for (let x = start + width * 0.08; x <= end - width * 0.08; x += postSpacing) {
     const t = clamp01(Math.abs(x - mid) / (width / 2));
     const surfaceY = hillTop + (GROUND_Y - hillTop) * Math.pow(t, 1.5);
     const fenceY = surfaceY + (GROUND_Y - surfaceY) * 0.7;
     if (fenceY < GROUND_Y - 5 && hillPath && ctx.isPointInPath(hillPath, x, fenceY)) {
-      posts.push({ x, y: fenceY });
+      bottomPosts.push({ x, y: fenceY });
     }
   }
 
-  if (posts.length < 2) return;
-
-  // Horizontal rails
-  ctx.strokeStyle = "#8B7355";
-  ctx.lineWidth = Math.max(1, 1.5 * scaleMult);
-  for (const railPct of [0.35, 0.7]) {
-    ctx.beginPath();
-    for (let i = 0; i < posts.length; i++) {
-      const px = posts[i].x, py = posts[i].y - postH * railPct;
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
+  // Top fence posts (along the hill crest)
+  const topPosts = [];
+  for (let x = start + width * 0.15; x <= end - width * 0.15; x += postSpacing) {
+    const t = clamp01(Math.abs(x - mid) / (width / 2));
+    const surfaceY = hillTop + (GROUND_Y - hillTop) * Math.pow(t, 1.5);
+    const fenceY = surfaceY + (GROUND_Y - surfaceY) * 0.15;
+    if (fenceY < GROUND_Y - 5 && hillPath && ctx.isPointInPath(hillPath, x, fenceY)) {
+      topPosts.push({ x, y: fenceY });
     }
-    ctx.stroke();
   }
 
-  // Posts
-  setInk(Math.max(1, postW * 0.5));
-  for (const p of posts) {
-    ctx.beginPath();
-    ctx.rect(p.x - postW / 2, p.y - postH, postW, postH);
-    fillAndInk("#5D4037");
+  // Helper to draw a fence row
+  function drawFenceRow(posts) {
+    if (posts.length < 2) return;
+
+    // Horizontal rails
+    ctx.strokeStyle = "#8B7355";
+    ctx.lineWidth = Math.max(1, 1.5 * scaleMult);
+    for (const railPct of [0.35, 0.7]) {
+      ctx.beginPath();
+      for (let i = 0; i < posts.length; i++) {
+        const px = posts[i].x, py = posts[i].y - postH * railPct;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+
+    // Posts
+    setInk(Math.max(1, postW * 0.5));
+    for (const p of posts) {
+      ctx.beginPath();
+      ctx.rect(p.x - postW / 2, p.y - postH, postW, postH);
+      fillAndInk("#5D4037");
+    }
   }
+
+  drawFenceRow(topPosts);
+  drawFenceRow(bottomPosts);
 }
 
 function drawCommonsContent(hillNum, config) {
@@ -1849,14 +1890,15 @@ window.encloseField = function(hillNum) {
 };
 
 window.demolishHouse = function(hillNum) {
-  if (!spend(COSTS.demolishHouse)) return;
   const houses = game.houses[hillNum];
   if (!houses || houses.length === 0) return;
+  game.money += 10;
+  updateUI();
   const removedIdx = houses.length - 1;
   houses.pop();
   game.peasants = game.peasants.filter(p => !(p.homeHill === parseInt(hillNum) && p.houseIdx === removedIdx));
   updatePeasantCount();
-  addLogMessage('A cottage was demolished');
+  addLogMessage('Cottage demolished for +\u00a310');
   closePopup();
 };
 
