@@ -5,11 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Folk Village</title>
   <style>
+    :root {
+      --color-ink: rgba(28, 20, 16, 0.95);
+      --color-ink-light: rgba(28, 20, 16, 0.25);
+      --color-brown-dark: #5D4037;
+      --color-brown-medium: #8B7355;
+      --color-brown-light: #8D6E63;
+      --color-farm: #6B5D3F;
+      --color-fallow: #9E8E6E;
+      --color-forest: #2D5016;
+      --color-commons: #7CB342;
+      --color-cleared: #8B7355;
+      --color-sky-top: #87CEEB;
+      --color-sky-bottom: #B0E0E6;
+      --color-health-good: #4CAF50;
+      --color-health-warn: #FF9800;
+      --color-health-bad: #F44336;
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: Arial, sans-serif;
       overflow: hidden;
-      background: linear-gradient(to bottom, #87CEEB 0%, #B0E0E6 100%);
+      background: linear-gradient(to bottom, var(--color-sky-top) 0%, var(--color-sky-bottom) 100%);
     }
     #viewport {
       width: 100vw;
@@ -153,17 +170,54 @@
 <script>
 const CANVAS_WIDTH = 3000, CANVAS_HEIGHT = 800, GROUND_Y = 800;
 const SETTINGS = { numLines: 20, lineSpacing: 48, curveAmount: 20, rowsPerPx: 0.015 };
-const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25, machine: 40, encloseField: 25, demolishHouse: 10 };
+const COSTS = { house: 20, clearLand: 100, buildFarm: 25, buildCommons: 25, machine: 40, encloseField: 25, demolishReward: 10 };
 const TASKS = { IDLE: 'idle', WALKING_TO_FIELD: 'walking_to_field', PLANTING: 'planting', HARVESTING: 'harvesting', TENDING_COMMONS: 'tending_commons', WALKING_HOME: 'walking_home' };
 const CROP_STAGES = ['seed', 'growing', 'ready'];
-const CROP_GROWTH_TIME = 200;
-const CROP_ROT_TIME = 3000;
-const NODE_SPACING_PX = 40; // Fixed pixel spacing between crop nodes
 
-const game = { money: 50, food: 100, day: 1, dayTimer: 0, dayLength: 600, houses: {}, peasants: [], machines: [], turnipsUnlocked: false, mechanicsUnlocked: false, enclosureUnlocked: false };
+/** Game constants - centralizes magic numbers for easier tuning */
+const GC = {
+  // Timing
+  CROP_GROWTH_TIME: 200,
+  CROP_ROT_TIME: 3000,
+  ROTTEN_REMOVAL_TIME: 200,
+  DAY_LENGTH: 600,
+  FALLOW_DAYS: 10,
+  // Movement
+  ARRIVAL_THRESHOLD: 8,
+  PEASANT_SPEED_MIN: 0.8,
+  PEASANT_SPEED_MAX: 1.2,
+  MACHINE_SPEED: 2.0,
+  // Idle timers
+  PEASANT_IDLE_MIN: 60,
+  PEASANT_IDLE_MAX: 180,
+  MACHINE_IDLE_MIN: 30,
+  MACHINE_IDLE_MAX: 90,
+  COMMONS_WORK_TIME: 120,
+  // Spacing
+  NODE_SPACING_PX: 40,
+  // Yields
+  COMMONS_FOOD_YIELD: 12,
+  FOOD_PER_PEASANT: 2,
+  PEASANTS_PER_HOUSE: 2,
+  MAX_HOUSES_PER_HILL: 5,
+  // Desperate mode threshold
+  DESPERATE_PEASANT_COUNT: 6,
+  // Repopulation
+  MAX_PEASANTS_PER_DAY: 3,
+  // Animation
+  MOVEMENT_LERP_SPEED: 0.15
+};
+
+const game = { money: 50, food: 100, day: 1, dayTimer: 0, dayLength: GC.DAY_LENGTH, houses: {}, peasants: [], machines: [], turnipsUnlocked: false, mechanicsUnlocked: false, enclosureUnlocked: false };
 const sheepState = {};
 const floaters = [];
 let ctx;
+
+/** Cached DOM element references for performance */
+const DOM = {};
+
+/** Cached sorted hill keys (back to front) for rendering */
+let sortedHillKeys = [];
 
 // Only these hills show detailed content
 const VISIBLE_HILLS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
@@ -198,17 +252,18 @@ function getYieldBonus() { return Math.min(4, 1 + Math.floor(game.day / 20)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function hash2(x, y) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123; return s - Math.floor(s); }
 
+/** Updates the HUD display with current game values */
 function updateUI() {
-  document.getElementById('moneyVal').textContent = game.money;
-  document.getElementById('foodVal').textContent = game.food;
-  document.getElementById('peasantVal').textContent = game.peasants.length;
-  document.getElementById('dayVal').textContent = game.day;
+  DOM.moneyVal.textContent = game.money;
+  DOM.foodVal.textContent = game.food;
+  DOM.peasantVal.textContent = game.peasants.length;
+  DOM.dayVal.textContent = game.day;
 }
 
+/** Flashes the HUD red briefly to indicate insufficient funds */
 function flashHUD() {
-  const hud = document.getElementById('hud');
-  hud.classList.add('bad');
-  setTimeout(() => hud.classList.remove('bad'), 200);
+  DOM.hud.classList.add('bad');
+  setTimeout(() => DOM.hud.classList.remove('bad'), 200);
 }
 
 function spend(cost) {
@@ -255,13 +310,22 @@ function getHillTopAnchor(hillNum, config) {
   return { x: (start + end) / 2, y: getHillTop(config) - 18 };
 }
 
-// Check if point is occluded by any hill in front of the given hill
+/**
+ * Check if point is occluded by any hill in front of the given hill.
+ * Uses bounding box pre-check for performance before expensive isPointInPath.
+ */
 function isPointVisible(x, y, hillNum) {
   const thisHillTop = getHillTop(hillConfigs[hillNum]);
   for (const key in hillConfigs) {
-    const otherTop = getHillTop(hillConfigs[key]);
+    const otherConfig = hillConfigs[key];
+    const otherTop = getHillTop(otherConfig);
     // Only check hills that are in front (higher peak value = closer to viewer)
     if (otherTop > thisHillTop) {
+      // Bounding box pre-check (fast rejection)
+      if (x < otherConfig.start || x > otherConfig.end) continue;
+      if (y < otherTop || y > GROUND_Y) continue;
+
+      // Expensive path check only if within bounding box
       const path = ALL_HILL_PATHS[key];
       if (path && ctx.isPointInPath(path, x, y)) {
         return false;
@@ -459,15 +523,14 @@ function drawFloaters() {
   ctx.globalAlpha = 1;
 }
 
-// Game log
+/** Add a message to the game log (auto-removes after 5 seconds) */
 function addLogMessage(text) {
-  const log = document.getElementById('game-log');
   const msg = document.createElement('div');
   msg.className = 'log-msg';
   msg.textContent = text;
-  log.appendChild(msg);
+  DOM.gameLog.appendChild(msg);
   setTimeout(() => msg.remove(), 5000);
-  while (log.children.length > 5) log.removeChild(log.firstChild);
+  while (DOM.gameLog.children.length > 5) DOM.gameLog.removeChild(DOM.gameLog.firstChild);
 }
 
 function drawSheep(x, y, scale, direction) {
@@ -870,31 +933,49 @@ function createMachine(hillNum) {
   };
 }
 
+/**
+ * Updates peasant count based on house capacity.
+ * Adds peasants to fill houses, removes excess peasants if houses demolished.
+ */
 function updatePeasantCount() {
   let totalCapacity = 0;
   for (const hillNum in game.houses) {
-    totalCapacity += game.houses[hillNum].length * 2;
+    totalCapacity += game.houses[hillNum].length * GC.PEASANTS_PER_HOUSE;
   }
+
+  // Add peasants to fill capacity
   while (game.peasants.length < totalCapacity) {
     for (const hillNum in game.houses) {
       const houses = game.houses[hillNum];
       for (let hIdx = 0; hIdx < houses.length; hIdx++) {
         if (game.peasants.length >= totalCapacity) break;
-        const peasant = createPeasant(parseInt(hillNum), hIdx);
+        const peasant = createPeasant(Number(hillNum), hIdx);
         if (peasant) game.peasants.push(peasant);
       }
     }
   }
+
+  // Remove excess peasants
   if (game.peasants.length > totalCapacity) {
     game.peasants = game.peasants.slice(0, totalCapacity);
   }
+
+  // Build occupancy map in a single pass (performance optimization)
+  const occupancy = {};
+  for (const p of game.peasants) {
+    const key = `${p.homeHill}_${p.houseIdx}`;
+    occupancy[key] = (occupancy[key] || 0) + 1;
+  }
+
+  // Update lit window counts
   for (const hillNum in game.houses) {
     const houses = game.houses[hillNum];
     for (let hIdx = 0; hIdx < houses.length; hIdx++) {
-      const count = game.peasants.filter(p => p.homeHill === parseInt(hillNum) && p.houseIdx === hIdx).length;
+      const count = occupancy[`${hillNum}_${hIdx}`] || 0;
       houses[hIdx].litCount = Math.min(houses[hIdx].windows, Math.ceil(count / 1.5));
     }
   }
+
   updateUI();
 }
 
@@ -942,7 +1023,7 @@ function generateRowNodes(hillNum, rowIdx) {
     const segDist = Math.sqrt(dx * dx + dy * dy);
     distAccum += segDist;
     
-    if (distAccum >= NODE_SPACING_PX) {
+    if (distAccum >= GC.NODE_SPACING_PX) {
       // Check if this point is within the hill and visible (not occluded)
       if (ctx.isPointInPath(hillPath, p.x, p.y) && isPointVisible(p.x, p.y, hillNum)) {
         nodes.push({ x: p.x, y: p.y, hasCrop: false, crop: null });
@@ -1054,30 +1135,36 @@ function goHome(peasant) {
   peasant.taskData = {};
 }
 
-function updatePeasants() {
+/** Update peasant movement each tick */
+function updatePeasantMovement() {
   for (const p of game.peasants) {
     const dx = p.targetX - p.x;
     const dy = p.targetY - p.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (Math.abs(dx) > 1) p.direction = dx > 0 ? 1 : -1;
-    
-    if (dist < 8) {
+
+    if (dist < GC.ARRIVAL_THRESHOLD) {
       handlePeasantArrival(p);
     } else {
       let moveX = (dx / dist) * p.speed;
       let moveY = (dy / dist) * p.speed;
 
-      // Avoid enclosed hills
+      // Avoid enclosed hills with improved pathfinding
       for (const key in hillConfigs) {
         const eConfig = hillConfigs[key];
         if (!eConfig.enclosed) continue;
-        const eNum = parseInt(key);
+        const eNum = Number(key);
         if (eNum === p.workHill || eNum === p.homeHill) continue;
         const ePath = ALL_HILL_PATHS[key];
         if (ePath && ctx.isPointInPath(ePath, p.x + moveX, p.y + moveY)) {
+          const hillMidX = (eConfig.start + eConfig.end) / 2;
+          const hillTop = getHillTop(eConfig);
+          const hillMidY = (hillTop + GROUND_Y) / 2;
           const goRight = p.targetX > p.x;
           moveX = (goRight ? 1 : -1) * p.speed;
-          moveY = 0.5;
+          const goUp = p.y > hillMidY;
+          const jitter = (Math.random() - 0.5) * 0.3;
+          moveY = ((goUp ? -1 : 1) * 0.5 + jitter) * p.speed;
           break;
         }
       }
@@ -1086,86 +1173,126 @@ function updatePeasants() {
       p.y += moveY;
     }
   }
-  
-  // Day cycle
-  game.dayTimer++;
-  if (game.dayTimer >= game.dayLength) {
-    game.dayTimer = 0;
-    game.day++;
-    if (game.day === 40 && !game.turnipsUnlocked) showNewspaper();
-    if (game.day === 80 && !game.mechanicsUnlocked) showMechanicsNewspaper();
-    if (game.day === 120 && !game.enclosureUnlocked) showEnclosureNewspaper();
-    // Check fallow fields
-    for (const fk in hillConfigs) {
-      const fc = hillConfigs[fk];
-      if (fc.landType === 'farm' && fc.isFallow && fc.fallowStartDay !== null) {
-        if (game.day - fc.fallowStartDay >= 10) {
-          fc.soilHealth = 100;
-          fc.isFallow = false;
-          fc.fallowStartDay = null;
-          fc.color = '#6B5D3F';
-          addLogMessage('Fallow field restored \u2014 soil health 100%');
-        }
+}
+
+/** Check and restore fallow fields that have completed their rest period */
+function updateFallowFields() {
+  for (const fk in hillConfigs) {
+    const fc = hillConfigs[fk];
+    if (fc.landType === 'farm' && fc.isFallow && fc.fallowStartDay !== null) {
+      if (game.day - fc.fallowStartDay >= GC.FALLOW_DAYS) {
+        fc.soilHealth = 100;
+        fc.isFallow = false;
+        fc.fallowStartDay = null;
+        fc.color = '#6B5D3F';
+        addLogMessage('Fallow field restored \u2014 soil health 100%');
       }
     }
-    const foodNeeded = game.peasants.length * 2;
-    game.food -= foodNeeded;
-    if (game.food < 0) {
-      const deficit = Math.abs(game.food);
-      let houseCapacity = 0;
-      for (const hn in game.houses) houseCapacity += game.houses[hn].length * 2;
-      const minPeasants = houseCapacity > 0 ? Math.min(2, houseCapacity) : 0;
-      const toRemove = Math.min(Math.max(0, game.peasants.length - minPeasants), Math.ceil(deficit / 2));
-      for (let i = 0; i < toRemove; i++) {
-        game.peasants.pop();
-        addLogMessage('A peasant has moved away \u2014 not enough food');
-      }
-      game.food = 0;
-    }
-    // Peasant repopulation — one per day if food is positive and houses have vacancies
-    if (game.food > 0) {
-      let houseCapacity = 0;
-      for (const hn in game.houses) houseCapacity += game.houses[hn].length * 2;
-      if (game.peasants.length < houseCapacity) {
-        let added = false;
-        for (const hn in game.houses) {
-          if (added) break;
-          const houses = game.houses[hn];
-          for (let hIdx = 0; hIdx < houses.length; hIdx++) {
-            const count = game.peasants.filter(p => p.homeHill === parseInt(hn) && p.houseIdx === hIdx).length;
-            if (count < 2) {
-              const peasant = createPeasant(parseInt(hn), hIdx);
-              if (peasant) {
-                game.peasants.push(peasant);
-                addLogMessage('A peasant has moved into a vacant cottage');
-                added = true;
-              }
-              break;
-            }
-          }
-        }
-        // Update lit windows
-        for (const hn in game.houses) {
-          const houses = game.houses[hn];
-          for (let hIdx = 0; hIdx < houses.length; hIdx++) {
-            const count = game.peasants.filter(p => p.homeHill === parseInt(hn) && p.houseIdx === hIdx).length;
-            houses[hIdx].litCount = Math.min(houses[hIdx].windows, Math.ceil(count / 1.5));
-          }
-        }
-      }
-    }
-    updateUI();
   }
 }
 
+/** Handle food consumption and peasant starvation */
+function consumeFood() {
+  const foodNeeded = game.peasants.length * GC.FOOD_PER_PEASANT;
+
+  // Check if we have enough food BEFORE subtracting
+  if (game.food < foodNeeded) {
+    const deficit = foodNeeded - game.food;
+    game.food = 0;
+
+    // Calculate how many peasants must leave
+    let houseCapacity = 0;
+    for (const hn in game.houses) houseCapacity += game.houses[hn].length * GC.PEASANTS_PER_HOUSE;
+    const minPeasants = houseCapacity > 0 ? Math.min(2, houseCapacity) : 0;
+    const toRemove = Math.min(game.peasants.length - minPeasants, Math.ceil(deficit / GC.FOOD_PER_PEASANT));
+
+    for (let i = 0; i < toRemove && game.peasants.length > minPeasants; i++) {
+      game.peasants.pop();
+      addLogMessage('A peasant has moved away \u2014 not enough food');
+    }
+  } else {
+    game.food -= foodNeeded;
+  }
+}
+
+/** Handle peasant repopulation - up to MAX_PEASANTS_PER_DAY can move in */
+function repopulatePeasants() {
+  if (game.food <= 0) return;
+
+  let houseCapacity = 0;
+  for (const hn in game.houses) houseCapacity += game.houses[hn].length * GC.PEASANTS_PER_HOUSE;
+  if (game.peasants.length >= houseCapacity) return;
+
+  // Build occupancy map for efficient lookup
+  const occupancy = {};
+  for (const p of game.peasants) {
+    const key = `${p.homeHill}_${p.houseIdx}`;
+    occupancy[key] = (occupancy[key] || 0) + 1;
+  }
+
+  // Add up to MAX_PEASANTS_PER_DAY peasants
+  let added = 0;
+  for (const hn in game.houses) {
+    if (added >= GC.MAX_PEASANTS_PER_DAY) break;
+    const houses = game.houses[hn];
+    for (let hIdx = 0; hIdx < houses.length; hIdx++) {
+      if (added >= GC.MAX_PEASANTS_PER_DAY) break;
+      const count = occupancy[`${hn}_${hIdx}`] || 0;
+      if (count < GC.PEASANTS_PER_HOUSE) {
+        const peasant = createPeasant(Number(hn), hIdx);
+        if (peasant) {
+          game.peasants.push(peasant);
+          occupancy[`${hn}_${hIdx}`] = count + 1;
+          addLogMessage('A peasant has moved into a vacant cottage');
+          added++;
+        }
+      }
+    }
+  }
+
+  // Update lit windows using occupancy map
+  for (const hn in game.houses) {
+    const houses = game.houses[hn];
+    for (let hIdx = 0; hIdx < houses.length; hIdx++) {
+      const count = occupancy[`${hn}_${hIdx}`] || 0;
+      houses[hIdx].litCount = Math.min(houses[hIdx].windows, Math.ceil(count / 1.5));
+    }
+  }
+}
+
+/** Advance day and trigger day-end events */
+function advanceDay() {
+  game.day++;
+  if (game.day === 40 && !game.turnipsUnlocked) showNewspaper();
+  if (game.day === 80 && !game.mechanicsUnlocked) showMechanicsNewspaper();
+  if (game.day === 120 && !game.enclosureUnlocked) showEnclosureNewspaper();
+
+  updateFallowFields();
+  consumeFood();
+  repopulatePeasants();
+  updateUI();
+}
+
+/** Main peasant update - movement and day cycle */
+function updatePeasants() {
+  updatePeasantMovement();
+
+  game.dayTimer++;
+  if (game.dayTimer >= game.dayLength) {
+    game.dayTimer = 0;
+    advanceDay();
+  }
+}
+
+/** Handle peasant arrival at target location */
 function handlePeasantArrival(p) {
   switch (p.task) {
     case TASKS.WALKING_TO_FIELD:
       p.task = p.taskData.taskType;
       if (p.task === TASKS.TENDING_COMMONS) {
-        p.idleTimer = 120;
+        p.idleTimer = GC.COMMONS_WORK_TIME;
       } else if (!p.taskData.nodes) {
-        p.idleTimer = 120 + Math.random() * 180;
+        p.idleTimer = GC.COMMONS_WORK_TIME + Math.random() * (GC.PEASANT_IDLE_MAX - GC.COMMONS_WORK_TIME);
       }
       break;
       
@@ -1226,16 +1353,16 @@ function handlePeasantArrival(p) {
     case TASKS.TENDING_COMMONS:
       p.idleTimer--;
       if (p.idleTimer <= 0) {
-        game.food += 12;
-        addFloater(p.x, p.y, '+12 food', '#E65100');
+        game.food += GC.COMMONS_FOOD_YIELD;
+        addFloater(p.x, p.y, '+' + GC.COMMONS_FOOD_YIELD + ' food', '#E65100');
         updateUI();
         findWorkForPeasant(p);
       }
       break;
-      
+
     case TASKS.WALKING_HOME:
       p.task = TASKS.IDLE;
-      p.idleTimer = 60 + Math.random() * 120;
+      p.idleTimer = GC.PEASANT_IDLE_MIN + Math.random() * (GC.PEASANT_IDLE_MAX - GC.PEASANT_IDLE_MIN);
       break;
       
     case TASKS.IDLE:
@@ -1253,6 +1380,8 @@ function findWorkForMachine(machine) {
     if (!config || config.landType !== 'farm' || !config.rowOwnership || config.isFallow) continue;
 
     // Collect nodes from 3 adjacent rows grouped by column (X position)
+    // Use half the node spacing as bucket size to group nodes that are visually aligned
+    const columnBucketSize = GC.NODE_SPACING_PX / 2;
     const plantColumns = {};
     const harvestColumns = {};
     let plantRowCount = 0;
@@ -1265,7 +1394,7 @@ function findWorkForMachine(machine) {
 
       if (empty.length > 0 && plantRowCount < 3) {
         for (const n of empty) {
-          const colKey = Math.round(n.x);
+          const colKey = Math.floor(n.x / columnBucketSize);
           if (!plantColumns[colKey]) plantColumns[colKey] = { x: n.x, y: n.y, nodes: [] };
           plantColumns[colKey].nodes.push({ node: n, rowIdx });
         }
@@ -1273,7 +1402,7 @@ function findWorkForMachine(machine) {
       }
       if (ready.length > 0 && harvestRowCount < 3) {
         for (const n of ready) {
-          const colKey = Math.round(n.x);
+          const colKey = Math.floor(n.x / columnBucketSize);
           if (!harvestColumns[colKey]) harvestColumns[colKey] = { x: n.x, y: n.y, nodes: [] };
           harvestColumns[colKey].nodes.push({ node: n, rowIdx });
         }
@@ -1389,7 +1518,7 @@ function handleMachineArrival(m) {
 
     case TASKS.WALKING_HOME:
       m.task = TASKS.IDLE;
-      m.idleTimer = 30 + Math.random() * 60;
+      m.idleTimer = GC.MACHINE_IDLE_MIN + Math.random() * (GC.MACHINE_IDLE_MAX - GC.MACHINE_IDLE_MIN);
       break;
 
     case TASKS.IDLE:
@@ -1399,6 +1528,7 @@ function handleMachineArrival(m) {
   }
 }
 
+/** Update machine movement each tick */
 function updateMachines() {
   for (const m of game.machines) {
     const dx = m.targetX - m.x;
@@ -1406,7 +1536,7 @@ function updateMachines() {
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (Math.abs(dx) > 1) m.direction = dx > 0 ? 1 : -1;
 
-    if (dist < 8) {
+    if (dist < GC.ARRIVAL_THRESHOLD) {
       handleMachineArrival(m);
     } else {
       m.x += (dx / dist) * m.speed;
@@ -1440,21 +1570,25 @@ function updateSheep(sheep) {
   }
 }
 
-// Crop growth and rot (affected by soil health)
+/**
+ * Updates crop growth and rot for all farms.
+ * Growth time increases with lower soil health.
+ * Rot time decreases with lower soil health.
+ */
 function updateCropGrowth() {
   for (const key of VISIBLE_HILLS) {
     const config = hillConfigs[key];
     if (!config || config.landType !== 'farm' || !config.rowNodes) continue;
     if (config.isFallow) continue;
     const healthPct = (config.soilHealth !== undefined ? config.soilHealth : 100) / 100;
-    const effectiveGrowthTime = Math.round(CROP_GROWTH_TIME * (1 + (1 - healthPct) * 2));
-    const effectiveRotTime = Math.round(CROP_ROT_TIME * Math.max(0.2, healthPct));
+    const effectiveGrowthTime = Math.round(GC.CROP_GROWTH_TIME * (1 + (1 - healthPct) * 2));
+    const effectiveRotTime = Math.round(GC.CROP_ROT_TIME * Math.max(0.2, healthPct));
     for (const rowIdx in config.rowNodes) {
       for (const node of config.rowNodes[rowIdx]) {
         if (!node.crop) continue;
         if (node.crop.stage === 'rotten') {
           node.crop.rotTimer = (node.crop.rotTimer || 0) + 1;
-          if (node.crop.rotTimer >= 200) {
+          if (node.crop.rotTimer >= GC.ROTTEN_REMOVAL_TIME) {
             node.hasCrop = false;
             node.crop = null;
           }
@@ -1494,10 +1628,10 @@ function initializeFarmHill(config) {
   }
 }
 
-// Drawing content
+/** Draw farm content including rows, crops, and soil health overlay */
 function drawFarmContent(hillNum, config) {
   if (!config.rowOwnership) return;
-  
+
   const { start, end, cropType } = config;
   const width = end - start;
   const hillTop = getHillTop(config);
@@ -1510,14 +1644,30 @@ function drawFarmContent(hillNum, config) {
   const slope = (hillNum % 2 === 0) ? 1 : -1;
   const hillPath = ALL_HILL_PATHS[hillNum];
 
+  // Visual feedback for low soil health - overlay a warning tint
+  const health = config.soilHealth !== undefined ? config.soilHealth : 100;
+  if (health < 60 && !config.isFallow) {
+    ctx.save();
+    ctx.clip(hillPath);
+    // Red/brown tint that intensifies as health drops
+    const severity = 1 - (health / 60);
+    ctx.fillStyle = `rgba(139, 69, 19, ${severity * 0.25})`;
+    ctx.fillRect(start, hillTop, width, hillHeight);
+    ctx.restore();
+  }
+
   // Draw row lines
   for (let lineIdx = 0; lineIdx < effectiveNumLines; lineIdx++) {
     const offset = (lineIdx - effectiveNumLines / 2) * effectiveSpacing;
     const owner = config.rowOwnership[lineIdx] || "player";
-    
+
     ctx.save();
     ctx.clip(hillPath);
-    ctx.strokeStyle = owner === "player" ? "rgba(28,20,16,0.70)" : "rgba(139,111,78,0.60)";
+    // Fade row lines when soil is unhealthy
+    const healthAlpha = lerp(0.3, 1, health / 100);
+    ctx.strokeStyle = owner === "player"
+      ? `rgba(28,20,16,${0.70 * healthAlpha})`
+      : `rgba(139,111,78,${0.60 * healthAlpha})`;
     ctx.lineWidth = lerp(1.2, 2.2, depth);
     ctx.beginPath();
     
@@ -1630,7 +1780,7 @@ function drawCommonsContent(hillNum, config) {
   }
 }
 
-// Main render
+/** Main render function - draws all game elements each frame */
 function render() {
   ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
   const skyGradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
@@ -1639,11 +1789,8 @@ function render() {
   ctx.fillStyle = skyGradient;
   ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-  // Sort hills by depth (back to front)
-  const keys = Object.keys(hillConfigs).map(n => parseInt(n, 10));
-  keys.sort((a, b) => getHillTop(hillConfigs[a]) - getHillTop(hillConfigs[b]));
-
-  for (const i of keys) {
+  // Use pre-sorted hill keys (cached at init)
+  for (const i of sortedHillKeys) {
     const config = hillConfigs[i];
     ctx.fillStyle = config.color;
     const path = ALL_HILL_PATHS[i];
@@ -1729,20 +1876,16 @@ function gameLoop(timestamp) {
   requestAnimationFrame(gameLoop);
 }
 
-// Popup
+/** Display the popup menu for a hill */
 function showPopup(hillNum) {
   const config = hillConfigs[hillNum];
-  const popup = document.getElementById('hillPopup');
-  const overlay = document.getElementById('popupOverlay');
-  const title = document.getElementById('popupTitle');
-  const info = document.getElementById('popupInfo');
   const houseCount = (game.houses[hillNum] || []).length;
   const landNames = { farm: 'Farm', commons: 'Commons', forest: 'Forest', cleared: 'Cleared Land' };
-  title.textContent = `Hill ${hillNum} - ${landNames[config.landType] || config.landType}`;
+  DOM.popupTitle.textContent = `Hill ${hillNum} - ${landNames[config.landType] || config.landType}`;
   let html = `<p>🏠 Houses: ${houseCount}/5</p>`;
   if (VISIBLE_HILLS.includes(hillNum)) {
     if (houseCount < 5) html += `<button class="popup-btn build" onclick="buildCottage(${hillNum})">Build Cottage (£${COSTS.house})</button>`;
-    if (houseCount > 0 && game.enclosureUnlocked) html += `<button class="popup-btn clear" onclick="demolishHouse(${hillNum})">Demolish Cottage (£${COSTS.demolishHouse})</button>`;
+    if (houseCount > 0 && game.enclosureUnlocked) html += `<button class="popup-btn build" onclick="demolishHouse(${hillNum})">Demolish Cottage (+£${COSTS.demolishReward})</button>`;
     if (config.landType === 'forest') html += `<button class="popup-btn clear" onclick="clearLand(${hillNum})">Clear Land (£${COSTS.clearLand})</button>`;
     if (config.landType === 'cleared') {
       html += `<button class="popup-btn farm" onclick="buildFarm(${hillNum})">Build Farm (£${COSTS.buildFarm})</button>`;
@@ -1795,14 +1938,15 @@ function showPopup(hillNum) {
     }
   }
   html += `<button class="popup-btn close" onclick="closePopup()">Close</button>`;
-  info.innerHTML = html;
-  popup.classList.add('show');
-  overlay.classList.add('show');
+  DOM.popupInfo.innerHTML = html;
+  DOM.hillPopup.classList.add('show');
+  DOM.popupOverlay.classList.add('show');
 }
 
+/** Close the popup menu */
 function closePopup() {
-  document.getElementById('hillPopup').classList.remove('show');
-  document.getElementById('popupOverlay').classList.remove('show');
+  DOM.hillPopup.classList.remove('show');
+  DOM.popupOverlay.classList.remove('show');
 }
 
 window.buildCottage = function(hillNum) {
@@ -1896,7 +2040,7 @@ window.demolishHouse = function(hillNum) {
   updateUI();
   const removedIdx = houses.length - 1;
   houses.pop();
-  game.peasants = game.peasants.filter(p => !(p.homeHill === parseInt(hillNum) && p.houseIdx === removedIdx));
+  game.peasants = game.peasants.filter(p => !(p.homeHill === Number(hillNum) && p.houseIdx === removedIdx));
   updatePeasantCount();
   addLogMessage('Cottage demolished for +\u00a310');
   closePopup();
@@ -1950,14 +2094,11 @@ window.endFallow = function(hillNum) {
   closePopup();
 };
 
+/** Show day 40 newspaper announcing turnips */
 function showNewspaper() {
   game.turnipsUnlocked = true;
-  const popup = document.getElementById('hillPopup');
-  const overlay = document.getElementById('popupOverlay');
-  const title = document.getElementById('popupTitle');
-  const info = document.getElementById('popupInfo');
-  title.textContent = '\ud83d\udcf0 THE VILLAGE GAZETTE';
-  info.innerHTML = `
+  DOM.popupTitle.textContent = '\ud83d\udcf0 THE VILLAGE GAZETTE';
+  DOM.popupInfo.innerHTML = `
     <div style="text-align:left;border:2px solid #1c1410;padding:12px;margin:8px 0;font-family:Georgia,serif">
       <p style="font-size:11px;color:#666;text-align:center">Day 40</p>
       <h3 style="text-align:center;border-bottom:2px solid #1c1410;padding-bottom:6px;margin-bottom:8px">AGRICULTURAL BREAKTHROUGH!</h3>
@@ -1967,18 +2108,15 @@ function showNewspaper() {
     </div>
     <button class="popup-btn build" onclick="closePopup()">Splendid!</button>
   `;
-  popup.classList.add('show');
-  overlay.classList.add('show');
+  DOM.hillPopup.classList.add('show');
+  DOM.popupOverlay.classList.add('show');
 }
 
+/** Show day 80 newspaper announcing machines */
 function showMechanicsNewspaper() {
   game.mechanicsUnlocked = true;
-  const popup = document.getElementById('hillPopup');
-  const overlay = document.getElementById('popupOverlay');
-  const title = document.getElementById('popupTitle');
-  const info = document.getElementById('popupInfo');
-  title.textContent = '\ud83d\udcf0 THE VILLAGE GAZETTE';
-  info.innerHTML = `
+  DOM.popupTitle.textContent = '\ud83d\udcf0 THE VILLAGE GAZETTE';
+  DOM.popupInfo.innerHTML = `
     <div style="text-align:left;border:2px solid #1c1410;padding:12px;margin:8px 0;font-family:Georgia,serif">
       <p style="font-size:11px;color:#666;text-align:center">Day 80</p>
       <h3 style="text-align:center;border-bottom:2px solid #1c1410;padding-bottom:6px;margin-bottom:8px">MECHANICAL REVOLUTION!</h3>
@@ -1987,18 +2125,15 @@ function showMechanicsNewspaper() {
     </div>
     <button class="popup-btn build" onclick="closePopup()">Remarkable!</button>
   `;
-  popup.classList.add('show');
-  overlay.classList.add('show');
+  DOM.hillPopup.classList.add('show');
+  DOM.popupOverlay.classList.add('show');
 }
 
+/** Show day 120 newspaper announcing enclosure acts */
 function showEnclosureNewspaper() {
   game.enclosureUnlocked = true;
-  const popup = document.getElementById('hillPopup');
-  const overlay = document.getElementById('popupOverlay');
-  const title = document.getElementById('popupTitle');
-  const info = document.getElementById('popupInfo');
-  title.textContent = '\ud83d\udcf0 THE VILLAGE GAZETTE';
-  info.innerHTML = `
+  DOM.popupTitle.textContent = '\ud83d\udcf0 THE VILLAGE GAZETTE';
+  DOM.popupInfo.innerHTML = `
     <div style="text-align:left;border:2px solid #1c1410;padding:12px;margin:8px 0;font-family:Georgia,serif">
       <p style="font-size:11px;color:#666;text-align:center">Day 120</p>
       <h3 style="text-align:center;border-bottom:2px solid #1c1410;padding-bottom:6px;margin-bottom:8px">THE ENCLOSURE ACTS</h3>
@@ -2006,14 +2141,14 @@ function showEnclosureNewspaper() {
       <ul style="font-size:13px;line-height:1.8;margin:8px 0 8px 20px;text-align:left">
         <li>Convert <strong>commons</strong> into farmland (\u00a325)</li>
         <li><strong>Enclose</strong> fields with fencing, removing peasant strips (\u00a325)</li>
-        <li><strong>Demolish</strong> peasant cottages (\u00a310)</li>
+        <li><strong>Demolish</strong> peasant cottages (+\u00a310)</li>
       </ul>
       <p style="font-size:13px;line-height:1.5">The peasantry are said to be most displeased.</p>
     </div>
     <button class="popup-btn build" onclick="closePopup()">So be it.</button>
   `;
-  popup.classList.add('show');
-  overlay.classList.add('show');
+  DOM.hillPopup.classList.add('show');
+  DOM.popupOverlay.classList.add('show');
 }
 
 window.closePopup = closePopup;
@@ -2044,11 +2179,11 @@ function setupInput() {
     const rect = canvas.getBoundingClientRect();
     const canvasX = (e.clientX - rect.left) * (canvas.width / rect.width);
     const canvasY = (e.clientY - rect.top) * (canvas.height / rect.height);
-    const keys = Object.keys(hillConfigs).map(n => parseInt(n, 10));
-    keys.sort((a, b) => getHillTop(hillConfigs[b]) - getHillTop(hillConfigs[a]));
-    for (const i of keys) {
-      if (ctx.isPointInPath(ALL_HILL_PATHS[i], canvasX, canvasY)) {
-        showPopup(i);
+    // Check hills front to back (reverse of render order) for click detection
+    for (let i = sortedHillKeys.length - 1; i >= 0; i--) {
+      const hillNum = sortedHillKeys[i];
+      if (ctx.isPointInPath(ALL_HILL_PATHS[hillNum], canvasX, canvasY)) {
+        showPopup(hillNum);
         return;
       }
     }
@@ -2057,20 +2192,37 @@ function setupInput() {
   document.getElementById('popupOverlay').addEventListener('click', closePopup);
 }
 
-// Init
+/** Initialize the game - set up canvas, paths, starting state */
 function init() {
-  const canvas = document.getElementById('gameCanvas');
-  ctx = canvas.getContext('2d');
-  
+  // Cache DOM element references for performance
+  DOM.canvas = document.getElementById('gameCanvas');
+  DOM.moneyVal = document.getElementById('moneyVal');
+  DOM.foodVal = document.getElementById('foodVal');
+  DOM.peasantVal = document.getElementById('peasantVal');
+  DOM.dayVal = document.getElementById('dayVal');
+  DOM.hud = document.getElementById('hud');
+  DOM.viewport = document.getElementById('viewport');
+  DOM.hillPopup = document.getElementById('hillPopup');
+  DOM.popupOverlay = document.getElementById('popupOverlay');
+  DOM.popupTitle = document.getElementById('popupTitle');
+  DOM.popupInfo = document.getElementById('popupInfo');
+  DOM.gameLog = document.getElementById('game-log');
+
+  ctx = DOM.canvas.getContext('2d');
+
   // Pre-generate all hill paths
   for (const key in hillConfigs) {
-    ALL_HILL_PATHS[key] = new Path2D(generateHillPath(parseInt(key), hillConfigs[key]));
+    ALL_HILL_PATHS[key] = new Path2D(generateHillPath(Number(key), hillConfigs[key]));
   }
+
+  // Cache sorted hill keys for rendering (back to front by depth)
+  sortedHillKeys = Object.keys(hillConfigs).map(Number);
+  sortedHillKeys.sort((a, b) => getHillTop(hillConfigs[a]) - getHillTop(hillConfigs[b]));
 
   for (const key in hillConfigs) {
     const config = hillConfigs[key];
     if (config.landType === 'farm') initializeFarmHill(config);
-    if (config.landType === 'commons') sheepState[key] = initializeSheep(parseInt(key), config);
+    if (config.landType === 'commons') sheepState[key] = initializeSheep(Number(key), config);
   }
 
   // Pre-plant first row of hill 11 at ready stage
@@ -2092,8 +2244,7 @@ function init() {
   updateUI();
   setupInput();
 
-  const viewport = document.getElementById('viewport');
-  viewport.scrollLeft = (viewport.scrollWidth - viewport.clientWidth) / 2;
+  DOM.viewport.scrollLeft = (DOM.viewport.scrollWidth - DOM.viewport.clientWidth) / 2;
 
   requestAnimationFrame(gameLoop);
 }
