@@ -66,6 +66,7 @@
       gap: 16px;
     }
     #hud.bad { background: rgba(255,230,230,0.95); border-color: rgba(200,60,60,0.5); }
+    #hud.hidden { display: none; }
     .popup-overlay {
       position: fixed;
       top: 0; left: 0;
@@ -146,15 +147,102 @@
       font-size: 13px;
       box-shadow: 0 4px 12px rgba(0,0,0,0.1);
     }
+    #day-indicator.hidden { display: none; }
+    #title-screen {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: linear-gradient(to bottom, var(--color-sky-top) 0%, var(--color-sky-bottom) 100%);
+      z-index: 2000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: Georgia, serif;
+    }
+    #title-screen.hidden { display: none; }
+    #title-screen h1 {
+      font-size: 72px;
+      color: var(--color-brown-dark);
+      text-shadow: 3px 3px 0 rgba(255,255,255,0.5);
+      margin-bottom: 10px;
+    }
+    #title-screen .subtitle {
+      font-size: 20px;
+      color: #5D4037;
+      margin-bottom: 40px;
+      font-style: italic;
+    }
+    #title-screen .how-to-play {
+      background: rgba(255,255,255,0.92);
+      border: 2px solid var(--color-ink-light);
+      border-radius: 16px;
+      padding: 24px 32px;
+      max-width: 600px;
+      text-align: left;
+      margin-bottom: 30px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+    }
+    #title-screen .how-to-play h2 {
+      text-align: center;
+      margin-bottom: 16px;
+      color: var(--color-brown-dark);
+      border-bottom: 2px solid #eee;
+      padding-bottom: 8px;
+    }
+    #title-screen .how-to-play ul {
+      margin: 0;
+      padding-left: 20px;
+      line-height: 1.8;
+      color: #333;
+    }
+    #title-screen .how-to-play li {
+      margin-bottom: 8px;
+    }
+    #title-screen .start-btn {
+      background: var(--color-health-good);
+      color: white;
+      border: none;
+      padding: 16px 48px;
+      font-size: 24px;
+      font-family: Georgia, serif;
+      border-radius: 12px;
+      cursor: pointer;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    #title-screen .start-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+    }
   </style>
 </head>
 <body>
-  <div id="hud">
+  <div id="title-screen">
+    <h1>Folk Village</h1>
+    <p class="subtitle">A game of land, labour, and enclosure</p>
+    <div class="how-to-play">
+      <h2>How to Play</h2>
+      <ul>
+        <li><strong>Click on hills</strong> to build cottages, clear forests, create farms and commons</li>
+        <li><strong>Peasants</strong> automatically work the land — they plant, harvest, and tend sheep</li>
+        <li><strong>Farms</strong> produce money (your rows) or food (peasant rows)</li>
+        <li><strong>Commons</strong> let peasants graze sheep for food</li>
+        <li><strong>Rotate crops</strong> to restore soil health — turnips restore 90%!</li>
+        <li><strong>Keep food above zero</strong> or peasants will leave</li>
+        <li>At <strong>Day 40</strong>: Turnips unlock with better soil restoration</li>
+        <li>At <strong>Day 80</strong>: Seed drills let you mechanize farming</li>
+        <li>At <strong>Day 120</strong>: The Enclosure Acts let you claim the commons...</li>
+      </ul>
+    </div>
+    <button class="start-btn" onclick="startGame()">Begin</button>
+  </div>
+  <div id="hud" class="hidden">
     <span>💰 £<span id="moneyVal">0</span></span>
     <span>🍞 Stores: <span id="foodVal">0</span></span>
-    <span>👥 <span id="peasantVal">0</span></span>
+    <span>👥 <span id="peasantVal">0</span>/<span id="capacityVal">0</span></span>
   </div>
-  <div id="day-indicator">Day <span id="dayVal">1</span></div>
+  <div id="day-indicator" class="hidden">Day <span id="dayVal">1</span></div>
   <div class="popup-overlay" id="popupOverlay"></div>
   <div class="hill-popup" id="hillPopup">
     <div class="popup-title" id="popupTitle">Hill</div>
@@ -252,11 +340,21 @@ function getYieldBonus() { return Math.min(4, 1 + Math.floor(game.day / 20)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function hash2(x, y) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123; return s - Math.floor(s); }
 
+/** Calculates total house capacity for peasants */
+function getHouseCapacity() {
+  let capacity = 0;
+  for (const hillNum in game.houses) {
+    capacity += game.houses[hillNum].length * GC.PEASANTS_PER_HOUSE;
+  }
+  return capacity;
+}
+
 /** Updates the HUD display with current game values */
 function updateUI() {
   DOM.moneyVal.textContent = game.money;
   DOM.foodVal.textContent = game.food;
   DOM.peasantVal.textContent = game.peasants.length;
+  DOM.capacityVal.textContent = getHouseCapacity();
   DOM.dayVal.textContent = game.day;
 }
 
@@ -2192,6 +2290,17 @@ function setupInput() {
   document.getElementById('popupOverlay').addEventListener('click', closePopup);
 }
 
+let gameStarted = false;
+
+/** Start the game from the title screen */
+window.startGame = function() {
+  DOM.titleScreen.classList.add('hidden');
+  DOM.hud.classList.remove('hidden');
+  DOM.dayIndicator.classList.remove('hidden');
+  gameStarted = true;
+  requestAnimationFrame(gameLoop);
+};
+
 /** Initialize the game - set up canvas, paths, starting state */
 function init() {
   // Cache DOM element references for performance
@@ -2199,8 +2308,11 @@ function init() {
   DOM.moneyVal = document.getElementById('moneyVal');
   DOM.foodVal = document.getElementById('foodVal');
   DOM.peasantVal = document.getElementById('peasantVal');
+  DOM.capacityVal = document.getElementById('capacityVal');
   DOM.dayVal = document.getElementById('dayVal');
   DOM.hud = document.getElementById('hud');
+  DOM.dayIndicator = document.getElementById('day-indicator');
+  DOM.titleScreen = document.getElementById('title-screen');
   DOM.viewport = document.getElementById('viewport');
   DOM.hillPopup = document.getElementById('hillPopup');
   DOM.popupOverlay = document.getElementById('popupOverlay');
@@ -2246,7 +2358,8 @@ function init() {
 
   DOM.viewport.scrollLeft = (DOM.viewport.scrollWidth - DOM.viewport.clientWidth) / 2;
 
-  requestAnimationFrame(gameLoop);
+  // Render initial frame but don't start game loop until player clicks Begin
+  render();
 }
 
 window.addEventListener('load', init);
